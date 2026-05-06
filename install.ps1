@@ -1,4 +1,4 @@
-﻿<#
+<#
 .SYNOPSIS
     TeleMail Bridge – Final Windows Installer (Python 3.11)
 .DESCRIPTION
@@ -19,7 +19,7 @@ $VENV_DIR = "$APP_ROOT\venv"
 $LOG_DIR  = "$APP_ROOT\logs"
 $DATA_DIR = "$APP_ROOT\data"
 $CONFIG_DIR = "$APP_ROOT\config"
-$GIT_REPO = "https://github.com/sergeyzhinskiy/telemail-bridge.git"   # <-- change to your repo
+$GIT_REPO = "https://github.com/yourusername/telemail-bridge.git"   # <-- change to your repo
 
 $PG_VERSION = "16"
 $PG_PORT    = 5432
@@ -98,19 +98,6 @@ function New-RandomPassword {
     return $password
 }
 
-function Wait-ForPostgreSQL {
-    param([string]$PgBin, [string]$Password, [int]$MaxRetries = 10)
-    $env:PGPASSWORD = $Password
-    for ($i = 1; $i -le $MaxRetries; $i++) {
-        $result = & "$PgBin\psql.exe" -U postgres -h localhost -p $PG_PORT -c "SELECT 1;" 2>&1
-        if ($LASTEXITCODE -eq 0) { Write-Info "PostgreSQL is ready"; return $true }
-        Write-Info "Waiting for PostgreSQL (attempt $i/$MaxRetries)..."
-        Start-Sleep -Seconds 3
-    }
-    Write-ErrorMsg "PostgreSQL did not start after $MaxRetries attempts"
-    return $false
-}
-
 # ----- Install Python 3.11 -----
 function Install-Python311 {
     Write-Step "1/7 Installing Python 3.11"
@@ -151,24 +138,41 @@ function Install-PostgreSQL {
     if (-not $script:PG_PASSWORD) { $script:PG_PASSWORD = New-RandomPassword -Length 20 }
     $pgBin = "C:\Program Files\PostgreSQL\$PG_VERSION\bin"
     $pgService = Get-Service "postgresql*" -ErrorAction SilentlyContinue
+    
     if (-not $pgService) {
+        # Первая установка
         $pgInstaller = "$env:TEMP\postgresql-16.exe"
         Invoke-WebRequest -Uri "https://get.enterprisedb.com/postgresql/postgresql-16.0-1-windows-x64.exe" -OutFile $pgInstaller
         Start-Process -FilePath $pgInstaller -ArgumentList "--mode unattended --superpassword $script:PG_PASSWORD --servicename postgresql-$PG_VERSION --serviceaccount postgres --serverport $PG_PORT --datadir `"$env:ProgramFiles\PostgreSQL\$PG_VERSION\data`" --install_runtimes 0" -Wait -NoNewWindow
         Remove-Item $pgInstaller -Force
         Start-Sleep -Seconds 10
     } else {
-        if ((Get-Service $pgService.Name).Status -ne "Running") { Start-Service $pgService.Name }
-        Write-Info "PostgreSQL service found, will ensure password for user telemail."
+        # Служба уже есть – просто запускаем
+        if ((Get-Service $pgService.Name).Status -ne "Running") { 
+            Start-Service $pgService.Name 
+            Start-Sleep -Seconds 10
+        }
+        Write-Info "PostgreSQL service found and running."
     }
+
     $env:Path += ";$pgBin"
     [Environment]::SetEnvironmentVariable("Path", [Environment]::GetEnvironmentVariable("Path","Machine") + ";$pgBin", "Machine")
-    if (-not (Wait-ForPostgreSQL -PgBin $pgBin -Password $script:PG_PASSWORD)) { Write-ErrorMsg "Cannot connect to PostgreSQL" }
-    & "$pgBin\psql.exe" -U postgres -c "ALTER USER telemail WITH PASSWORD '$script:PG_PASSWORD';" 2>$null
-    if ($LASTEXITCODE -ne 0) { & "$pgBin\psql.exe" -U postgres -c "CREATE USER telemail WITH PASSWORD '$script:PG_PASSWORD';" 2>$null }
-    & "$pgBin\psql.exe" -U postgres -c "CREATE DATABASE telemail OWNER telemail;" 2>$null
-    & "$pgBin\psql.exe" -U postgres -c "GRANT ALL PRIVILEGES ON DATABASE telemail TO telemail;" 2>$null
-    Write-Success "PostgreSQL 16 ready"
+
+    # Пробуем подключиться к postgres без пароля (trust)
+    $env:PGPASSWORD = ""
+    
+    # Создаём пользователя telemail через psql с доверенным входом
+    $result = & "$pgBin\psql.exe" -U postgres -h localhost -p $PG_PORT -c "ALTER USER telemail WITH PASSWORD '$script:PG_PASSWORD';" 2>&1
+    if ($LASTEXITCODE -ne 0) {
+        # Возможно, пользователь telemail не существует – создаём
+        $result = & "$pgBin\psql.exe" -U postgres -h localhost -p $PG_PORT -c "CREATE USER telemail WITH PASSWORD '$script:PG_PASSWORD';" 2>&1
+    }
+    
+    # Создаём базу данных
+    & "$pgBin\psql.exe" -U postgres -h localhost -p $PG_PORT -c "CREATE DATABASE telemail OWNER telemail;" 2>$null
+    & "$pgBin\psql.exe" -U postgres -h localhost -p $PG_PORT -c "GRANT ALL PRIVILEGES ON DATABASE telemail TO telemail;" 2>$null
+    
+    Write-Success "PostgreSQL 16 installed"
 }
 
 # ----- Install Redis -----
@@ -319,14 +323,6 @@ Encryption Key: $encryptionKey
 # ----- Initialize database -----
 function Initialize-Database {
     Write-Info "Initializing database..."
-    $pgService = Get-Service "postgresql*" -ErrorAction SilentlyContinue
-    if ($pgService -and $pgService.Status -ne "Running") { Start-Service $pgService.Name }
-    $redisService = Get-Service "Redis" -ErrorAction SilentlyContinue
-    if ($redisService -and $redisService.Status -ne "Running") { Start-Service $redisService.Name }
-    $pgBin = "C:\Program Files\PostgreSQL\$PG_VERSION\bin"
-    if (-not (Wait-ForPostgreSQL -PgBin $pgBin -Password $script:PG_PASSWORD)) {
-        Write-ErrorMsg "Cannot initialize database because PostgreSQL is not available."
-    }
     Set-Location "$APP_ROOT\src"
     & "$VENV_DIR\Scripts\Activate.ps1"
     $email = $script:AdminEmail
