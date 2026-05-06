@@ -1,4 +1,4 @@
-<#
+﻿<#
 .SYNOPSIS
     TeleMail Bridge – Final Windows Installer (Python 3.11)
 .DESCRIPTION
@@ -103,21 +103,62 @@ function New-RandomPassword {
     return $password
 }
 
+function Find-PgDataDir {
+    $possiblePaths = @(
+        "C:\Program Files\PostgreSQL\$PG_VERSION\data",
+        "C:\Program Files\PostgreSQL\$PG_VERSION\data\..\data",
+        "C:\ProgramData\PostgreSQL\$PG_VERSION\data",
+        "$env:PROGRAMDATA\PostgreSQL\$PG_VERSION\data",
+        "$env:PROGRAMFILES\PostgreSQL\$PG_VERSION\data"
+    )
+    
+    foreach ($path in $possiblePaths) {
+        $resolvedPath = Resolve-Path $path -ErrorAction SilentlyContinue
+        if ($resolvedPath -and (Test-Path (Join-Path $resolvedPath "pg_hba.conf"))) {
+            return $resolvedPath.Path
+        }
+    }
+    
+    # Try to find using Windows service
+    $pgService = Get-Service "postgresql*" -ErrorAction SilentlyContinue
+    if ($pgService) {
+        $servicePath = (Get-WmiObject Win32_Service -Filter "Name='$($pgService.Name)'").PathName
+        if ($servicePath -match '-D "([^"]+)"') {
+            $dataDir = $matches[1]
+            if (Test-Path (Join-Path $dataDir "pg_hba.conf")) {
+                return $dataDir
+            }
+        }
+    }
+    
+    return $null
+}
+
 function Set-PgHbaTrust {
-    param([string]$PgDataDir)
-    $hbaFile = Join-Path $PgDataDir "pg_hba.conf"
-    if (-not (Test-Path $hbaFile)) { Write-ErrorMsg "pg_hba.conf not found at $hbaFile" }
+    $pgDataDir = Find-PgDataDir
+    if (-not $pgDataDir) {
+        Write-ErrorMsg "PostgreSQL data directory not found. Please install PostgreSQL manually first."
+    }
+    
+    $hbaFile = Join-Path $pgDataDir "pg_hba.conf"
+    if (-not (Test-Path $hbaFile)) {
+        Write-ErrorMsg "pg_hba.conf not found at $hbaFile"
+    }
     
     # Backup
     Copy-Item $hbaFile "$hbaFile.backup" -Force
     
     # Replace scram-sha-256 and md5 with trust for local connections
-    $content = Get-Content $hbaFile -Encoding UTF8
+    $content = Get-Content $hbaFile -Encoding UTF8 -ErrorAction SilentlyContinue
+    if (-not $content) {
+        $content = Get-Content $hbaFile -Encoding Default
+    }
     $content = $content -replace 'scram-sha-256', 'trust'
     $content = $content -replace 'md5', 'trust'
     $content | Set-Content $hbaFile -Encoding UTF8
     
-    Write-Info "pg_hba.conf set to trust mode"
+    Write-Info "pg_hba.conf set to trust mode at $hbaFile"
+    return $pgDataDir
 }
 
 function Restore-PgHba {
@@ -127,7 +168,7 @@ function Restore-PgHba {
     if (Test-Path $backupFile) {
         Copy-Item $backupFile $hbaFile -Force
         Remove-Item $backupFile -Force
-        Write-Info "pg_hba.conf restored"
+        Write-Info "pg_hba.conf restored at $hbaFile"
     }
 }
 
@@ -175,34 +216,68 @@ function Install-PostgreSQL {
     $pgService = Get-Service "postgresql*" -ErrorAction SilentlyContinue
     
     if (-not $pgService) {
-        # First install
-        $pgInstaller = "$env:TEMP\postgresql-16.exe"
-        Invoke-WebRequest -Uri "https://get.enterprisedb.com/postgresql/postgresql-16.0-1-windows-x64.exe" -OutFile $pgInstaller
-        Start-Process -FilePath $pgInstaller -ArgumentList "--mode unattended --superpassword $script:PG_PASSWORD --servicename postgresql-$PG_VERSION --serviceaccount postgres --serverport $PG_PORT --datadir `"$pgDataDir`" --install_runtimes 0" -Wait -NoNewWindow
-        Remove-Item $pgInstaller -Force
-        Start-Sleep -Seconds 10
-    } else {
-        # Service exists - ensure running
-        if ((Get-Service $pgService.Name).Status -ne "Running") { 
-            Start-Service $pgService.Name 
-            Start-Sleep -Seconds 10
+        Write-Info "Installing PostgreSQL 16..."
+        $pgInstaller = "$env:TEMP\postgresql-16.4-1-windows-x64.exe"
+        try {
+            Invoke-WebRequest -Uri "https://get.enterprisedb.com/postgresql/postgresql-16.4-1-windows-x64.exe" -OutFile $pgInstaller -TimeoutSec 300
+        } catch {
+            Invoke-WebRequest -Uri "https://sbp.enterprisedb.com/getfile.jsp?fileid=1258913" -OutFile $pgInstaller -TimeoutSec 300
         }
-        Write-Info "PostgreSQL service found and running."
+        
+        Start-Process -FilePath $pgInstaller -ArgumentList "--mode unattended --superpassword $script:PG_PASSWORD --servicename postgresql-x64-$PG_VERSION --serviceaccount postgres --serverport $PG_PORT --datadir `"$pgDataDir`" --install_runtimes 1" -Wait -NoNewWindow
+        Remove-Item $pgInstaller -Force
+        Start-Sleep -Seconds 15
+        $pgService = Get-Service "postgresql*" -ErrorAction SilentlyContinue
     }
-
+    
+    if (-not $pgService) {
+        Write-ErrorMsg "PostgreSQL service not found after installation"
+    }
+    
+    # Ensure service is running
+    if ((Get-Service $pgService.Name).Status -ne "Running") { 
+        Start-Service $pgService.Name 
+        Start-Sleep -Seconds 10
+    }
+    
     $env:Path += ";$pgBin"
     [Environment]::SetEnvironmentVariable("Path", [Environment]::GetEnvironmentVariable("Path","Machine") + ";$pgBin", "Machine")
-
+    
+    # Find actual data directory
+    $actualDataDir = Find-PgDataDir
+    if (-not $actualDataDir) {
+        Write-ErrorMsg "Could not find PostgreSQL data directory. Please check PostgreSQL installation."
+    }
+    Write-Info "PostgreSQL data directory: $actualDataDir"
+    
     # Temporarily set trust authentication
-    Set-PgHbaTrust -PgDataDir $pgDataDir
+    Set-PgHbaTrust
     
     # Reload PostgreSQL config
-    & "$pgBin\pg_ctl.exe" -D "$pgDataDir" reload 2>$null
-    Start-Sleep -Seconds 2
-
+    & "$pgBin\pg_ctl.exe" -D "$actualDataDir" reload 2>$null
+    Start-Sleep -Seconds 3
+    
     try {
         # Now we can connect without password
         $env:PGPASSWORD = ""
+        
+        # Wait for PostgreSQL to be ready
+        $maxRetries = 30
+        $retryCount = 0
+        $connected = $false
+        while ($retryCount -lt $maxRetries -and -not $connected) {
+            try {
+                & "$pgBin\psql.exe" -U postgres -h localhost -p $PG_PORT -c "SELECT 1" -t 2>$null
+                if ($LASTEXITCODE -eq 0) { $connected = $true }
+            } catch {
+                Start-Sleep -Seconds 2
+                $retryCount++
+            }
+        }
+        
+        if (-not $connected) {
+            throw "Cannot connect to PostgreSQL"
+        }
         
         # Create or alter user telemail
         $result = & "$pgBin\psql.exe" -U postgres -h localhost -p $PG_PORT -c "ALTER USER telemail WITH PASSWORD '$script:PG_PASSWORD';" 2>&1
@@ -219,8 +294,8 @@ function Install-PostgreSQL {
         Write-ErrorMsg "Failed to configure PostgreSQL: $_"
     } finally {
         # Restore pg_hba.conf
-        Restore-PgHba -PgDataDir $pgDataDir
-        & "$pgBin\pg_ctl.exe" -D "$pgDataDir" reload 2>$null
+        Restore-PgHba -PgDataDir $actualDataDir
+        & "$pgBin\pg_ctl.exe" -D "$actualDataDir" reload 2>$null
         Write-Info "Authentication restored"
     }
 }
