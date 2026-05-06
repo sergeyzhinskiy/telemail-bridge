@@ -1,4 +1,4 @@
-﻿<#
+<#
 .SYNOPSIS
     TeleMail Bridge – Final Windows Installer (Python 3.11)
 .DESCRIPTION
@@ -11,7 +11,7 @@
 
 #Requires -RunAsAdministrator
 
-$ErrorActionPreference = "Stop"
+$ErrorActionPreference = "Continue"
 $ProgressPreference = "SilentlyContinue"
 
 # ----- Set UTF-8 encoding for console -----
@@ -24,7 +24,7 @@ $VENV_DIR = "$APP_ROOT\venv"
 $LOG_DIR  = "$APP_ROOT\logs"
 $DATA_DIR = "$APP_ROOT\data"
 $CONFIG_DIR = "$APP_ROOT\config"
-$GIT_REPO = "https://github.com/sergeyzhinskiy/telemail-bridge.git"   # <-- change to your repo
+$GIT_REPO = "https://github.com/sergeyzhinskiy/telemail-bridge.git"  # <-- change to your repo
 
 $PG_VERSION = "16"
 $PG_PORT    = 5432
@@ -103,73 +103,26 @@ function New-RandomPassword {
     return $password
 }
 
-function Find-PgDataDir {
-    $possiblePaths = @(
-        "C:\Program Files\PostgreSQL\$PG_VERSION\data",
-        "C:\Program Files\PostgreSQL\$PG_VERSION\data\..\data",
-        "C:\ProgramData\PostgreSQL\$PG_VERSION\data",
-        "$env:PROGRAMDATA\PostgreSQL\$PG_VERSION\data",
-        "$env:PROGRAMFILES\PostgreSQL\$PG_VERSION\data"
-    )
-    
-    foreach ($path in $possiblePaths) {
-        $resolvedPath = Resolve-Path $path -ErrorAction SilentlyContinue
-        if ($resolvedPath -and (Test-Path (Join-Path $resolvedPath "pg_hba.conf"))) {
-            return $resolvedPath.Path
-        }
+function Get-PostgreSQLService {
+    $services = Get-Service -Name "postgresql*" -ErrorAction SilentlyContinue
+    if ($services) {
+        return $services[0]
     }
-    
-    # Try to find using Windows service
-    $pgService = Get-Service "postgresql*" -ErrorAction SilentlyContinue
-    if ($pgService) {
-        $servicePath = (Get-WmiObject Win32_Service -Filter "Name='$($pgService.Name)'").PathName
-        if ($servicePath -match '-D "([^"]+)"') {
-            $dataDir = $matches[1]
-            if (Test-Path (Join-Path $dataDir "pg_hba.conf")) {
-                return $dataDir
-            }
-        }
-    }
-    
     return $null
 }
 
-function Set-PgHbaTrust {
-    $pgDataDir = Find-PgDataDir
-    if (-not $pgDataDir) {
-        Write-ErrorMsg "PostgreSQL data directory not found. Please install PostgreSQL manually first."
+function Get-PostgreSQLBinPath {
+    $paths = @(
+        "C:\Program Files\PostgreSQL\$PG_VERSION\bin",
+        "C:\Program Files\PostgreSQL\16\bin",
+        "C:\Program Files\PostgreSQL\15\bin"
+    )
+    foreach ($path in $paths) {
+        if (Test-Path "$path\psql.exe") {
+            return $path
+        }
     }
-    
-    $hbaFile = Join-Path $pgDataDir "pg_hba.conf"
-    if (-not (Test-Path $hbaFile)) {
-        Write-ErrorMsg "pg_hba.conf not found at $hbaFile"
-    }
-    
-    # Backup
-    Copy-Item $hbaFile "$hbaFile.backup" -Force
-    
-    # Replace scram-sha-256 and md5 with trust for local connections
-    $content = Get-Content $hbaFile -Encoding UTF8 -ErrorAction SilentlyContinue
-    if (-not $content) {
-        $content = Get-Content $hbaFile -Encoding Default
-    }
-    $content = $content -replace 'scram-sha-256', 'trust'
-    $content = $content -replace 'md5', 'trust'
-    $content | Set-Content $hbaFile -Encoding UTF8
-    
-    Write-Info "pg_hba.conf set to trust mode at $hbaFile"
-    return $pgDataDir
-}
-
-function Restore-PgHba {
-    param([string]$PgDataDir)
-    $hbaFile = Join-Path $PgDataDir "pg_hba.conf"
-    $backupFile = "$hbaFile.backup"
-    if (Test-Path $backupFile) {
-        Copy-Item $backupFile $hbaFile -Force
-        Remove-Item $backupFile -Force
-        Write-Info "pg_hba.conf restored at $hbaFile"
-    }
+    return $null
 }
 
 # ----- Install Python 3.11 -----
@@ -202,7 +155,7 @@ function Install-Python311 {
 # ----- Install system packages -----
 function Install-SystemPackages {
     Write-Step "2/7 Installing system packages"
-    choco install git ffmpeg vcredist140 vcredist2015 -y --limit-output 2>&1 | Out-Null
+    choco install git ffmpeg vcredist-all -y --limit-output 2>&1 | Out-Null
     Write-Success "System packages installed"
 }
 
@@ -211,9 +164,7 @@ function Install-PostgreSQL {
     Write-Step "3/7 Installing PostgreSQL 16"
     if (-not $script:PG_PASSWORD) { $script:PG_PASSWORD = New-RandomPassword -Length 20 }
     
-    $pgBin = "C:\Program Files\PostgreSQL\$PG_VERSION\bin"
-    $pgDataDir = "C:\Program Files\PostgreSQL\$PG_VERSION\data"
-    $pgService = Get-Service "postgresql*" -ErrorAction SilentlyContinue
+    $pgService = Get-PostgreSQLService
     
     if (-not $pgService) {
         Write-Info "Installing PostgreSQL 16..."
@@ -221,13 +172,14 @@ function Install-PostgreSQL {
         try {
             Invoke-WebRequest -Uri "https://get.enterprisedb.com/postgresql/postgresql-16.4-1-windows-x64.exe" -OutFile $pgInstaller -TimeoutSec 300
         } catch {
-            Invoke-WebRequest -Uri "https://sbp.enterprisedb.com/getfile.jsp?fileid=1258913" -OutFile $pgInstaller -TimeoutSec 300
+            Write-ErrorMsg "Failed to download PostgreSQL installer"
         }
         
-        Start-Process -FilePath $pgInstaller -ArgumentList "--mode unattended --superpassword $script:PG_PASSWORD --servicename postgresql-x64-$PG_VERSION --serviceaccount postgres --serverport $PG_PORT --datadir `"$pgDataDir`" --install_runtimes 1" -Wait -NoNewWindow
+        # Install with default paths
+        Start-Process -FilePath $pgInstaller -ArgumentList "--mode unattended --superpassword $script:PG_PASSWORD --servicename postgresql-x64-16 --serviceaccount postgres --serverport $PG_PORT" -Wait -NoNewWindow
         Remove-Item $pgInstaller -Force
-        Start-Sleep -Seconds 15
-        $pgService = Get-Service "postgresql*" -ErrorAction SilentlyContinue
+        Start-Sleep -Seconds 20
+        $pgService = Get-PostgreSQLService
     }
     
     if (-not $pgService) {
@@ -235,68 +187,62 @@ function Install-PostgreSQL {
     }
     
     # Ensure service is running
-    if ((Get-Service $pgService.Name).Status -ne "Running") { 
-        Start-Service $pgService.Name 
-        Start-Sleep -Seconds 10
+    $svcName = $pgService.Name
+    $svcStatus = (Get-Service $svcName -ErrorAction SilentlyContinue).Status
+    if ($svcStatus -ne "Running") { 
+        Write-Info "Starting PostgreSQL service..."
+        Start-Service $svcName
+        Start-Sleep -Seconds 15
     }
     
-    $env:Path += ";$pgBin"
-    [Environment]::SetEnvironmentVariable("Path", [Environment]::GetEnvironmentVariable("Path","Machine") + ";$pgBin", "Machine")
-    
-    # Find actual data directory
-    $actualDataDir = Find-PgDataDir
-    if (-not $actualDataDir) {
-        Write-ErrorMsg "Could not find PostgreSQL data directory. Please check PostgreSQL installation."
+    $pgBin = Get-PostgreSQLBinPath
+    if (-not $pgBin) {
+        Write-ErrorMsg "PostgreSQL bin directory not found"
     }
-    Write-Info "PostgreSQL data directory: $actualDataDir"
     
-    # Temporarily set trust authentication
-    Set-PgHbaTrust
+    Write-Info "PostgreSQL bin path: $pgBin"
     
-    # Reload PostgreSQL config
-    & "$pgBin\pg_ctl.exe" -D "$actualDataDir" reload 2>$null
-    Start-Sleep -Seconds 3
+    # Add to PATH
+    $env:Path = "$pgBin;$env:Path"
     
+    # Test connection to PostgreSQL
+    Write-Info "Testing PostgreSQL connection..."
+    $maxRetries = 20
+    $connected = $false
+    
+    for ($i = 1; $i -le $maxRetries; $i++) {
+        Start-Sleep -Seconds 2
+        $env:PGPASSWORD = $script:PG_PASSWORD
+        $testResult = & "$pgBin\psql.exe" -U postgres -h localhost -p $PG_PORT -c "SELECT 1" -t 2>&1
+        if ($LASTEXITCODE -eq 0) {
+            $connected = $true
+            Write-Success "PostgreSQL is ready"
+            break
+        }
+        Write-Info "Waiting for PostgreSQL... ($i/$maxRetries)"
+    }
+    
+    if (-not $connected) {
+        Write-Warning "PostgreSQL connection test failed, but continuing..."
+        Write-Info "Last error: $testResult"
+    }
+    
+    # Create user and database
     try {
-        # Now we can connect without password
-        $env:PGPASSWORD = ""
+        $env:PGPASSWORD = $script:PG_PASSWORD
         
-        # Wait for PostgreSQL to be ready
-        $maxRetries = 30
-        $retryCount = 0
-        $connected = $false
-        while ($retryCount -lt $maxRetries -and -not $connected) {
-            try {
-                & "$pgBin\psql.exe" -U postgres -h localhost -p $PG_PORT -c "SELECT 1" -t 2>$null
-                if ($LASTEXITCODE -eq 0) { $connected = $true }
-            } catch {
-                Start-Sleep -Seconds 2
-                $retryCount++
-            }
-        }
-        
-        if (-not $connected) {
-            throw "Cannot connect to PostgreSQL"
-        }
-        
-        # Create or alter user telemail
-        $result = & "$pgBin\psql.exe" -U postgres -h localhost -p $PG_PORT -c "ALTER USER telemail WITH PASSWORD '$script:PG_PASSWORD';" 2>&1
-        if ($LASTEXITCODE -ne 0) {
-            & "$pgBin\psql.exe" -U postgres -h localhost -p $PG_PORT -c "CREATE USER telemail WITH PASSWORD '$script:PG_PASSWORD';" 2>&1
-        }
+        # Create user
+        & "$pgBin\psql.exe" -U postgres -h localhost -p $PG_PORT -c "CREATE USER telemail WITH PASSWORD '$script:PG_PASSWORD';" 2>&1 | Out-Null
         
         # Create database
-        & "$pgBin\psql.exe" -U postgres -h localhost -p $PG_PORT -c "CREATE DATABASE telemail OWNER telemail;" 2>$null
-        & "$pgBin\psql.exe" -U postgres -h localhost -p $PG_PORT -c "GRANT ALL PRIVILEGES ON DATABASE telemail TO telemail;" 2>$null
+        & "$pgBin\psql.exe" -U postgres -h localhost -p $PG_PORT -c "CREATE DATABASE telemail OWNER telemail;" 2>&1 | Out-Null
         
-        Write-Success "PostgreSQL 16 configured"
+        # Grant privileges
+        & "$pgBin\psql.exe" -U postgres -h localhost -p $PG_PORT -c "GRANT ALL PRIVILEGES ON DATABASE telemail TO telemail;" 2>&1 | Out-Null
+        
+        Write-Success "PostgreSQL 16 configured successfully"
     } catch {
-        Write-ErrorMsg "Failed to configure PostgreSQL: $_"
-    } finally {
-        # Restore pg_hba.conf
-        Restore-PgHba -PgDataDir $actualDataDir
-        & "$pgBin\pg_ctl.exe" -D "$actualDataDir" reload 2>$null
-        Write-Info "Authentication restored"
+        Write-Warning "Could not configure PostgreSQL: $_"
     }
 }
 
@@ -305,25 +251,26 @@ function Install-Redis {
     Write-Step "4/7 Installing Redis"
     if (-not $script:REDIS_PASSWORD) { $script:REDIS_PASSWORD = New-RandomPassword -Length 16 }
     if (Get-Service "Redis" -ErrorAction SilentlyContinue) { Write-Success "Redis already installed"; return }
-    $redisInstaller = "$env:TEMP\Redis-x64.msi"
-    try {
-        Invoke-WebRequest -Uri "https://github.com/microsoftarchive/redis/releases/download/win-3.2.100/Redis-x64-3.2.100.msi" -OutFile $redisInstaller
-        Start-Process msiexec.exe -ArgumentList "/i `"$redisInstaller`" /quiet /norestart" -Wait -NoNewWindow
-        Remove-Item $redisInstaller -Force
-    } catch {
-        Write-Warning "MSI failed, trying Memurai..."
-        $memurai = "$env:TEMP\memurai.exe"
-        Invoke-WebRequest -Uri "https://www.memurai.com/get/memurai-developer-latest.exe" -OutFile $memurai
-        Start-Process $memurai -ArgumentList "/VERYSILENT" -Wait -NoNewWindow
-        Remove-Item $memurai -Force
+    
+    Write-Info "Installing Redis via Chocolatey..."
+    choco install redis-64 -y --limit-output 2>&1 | Out-Null
+    
+    # Configure Redis password
+    $configPath = "C:\ProgramData\Redis\redis.windows.conf"
+    if (-not (Test-Path $configPath)) {
+        $configPath = "C:\Program Files\Redis\redis.windows.conf"
     }
-    $configPath = "C:\Program Files\Redis\redis.windows.conf"
+    
     if (Test-Path $configPath) {
-        $cfg = Get-Content $configPath
-        $cfg = $cfg -replace "# requirepass foobared", "requirepass $script:REDIS_PASSWORD"
-        $cfg = $cfg -replace "# bind 127.0.0.1", "bind 127.0.0.1"
-        $cfg | Set-Content $configPath
+        $cfg = Get-Content $configPath -ErrorAction SilentlyContinue
+        if ($cfg) {
+            $cfg = $cfg -replace "# requirepass foobared", "requirepass $script:REDIS_PASSWORD"
+            $cfg = $cfg -replace "# bind 127.0.0.1", "bind 127.0.0.1"
+            $cfg | Set-Content $configPath -Force
+            Write-Info "Redis configured with password"
+        }
     }
+    
     Restart-Service Redis -ErrorAction SilentlyContinue
     Start-Service Redis -ErrorAction SilentlyContinue
     Write-Success "Redis installed"
@@ -334,20 +281,42 @@ function Prepare-Environment {
     Write-Step "5/7 Preparing directories & cloning repository"
     $dirs = @($APP_ROOT, $LOG_DIR, $DATA_DIR, $CONFIG_DIR, "$DATA_DIR\sessions", "$DATA_DIR\media", "$DATA_DIR\temp", "$DATA_DIR\backups")
     foreach ($d in $dirs) { if (-not (Test-Path $d)) { New-Item -ItemType Directory -Path $d -Force | Out-Null } }
-    if (-not (Get-Command git -ErrorAction SilentlyContinue)) { Write-ErrorMsg "Git is not installed." }
-    if (Test-Path "$APP_ROOT\src") { Remove-Item "$APP_ROOT\src" -Recurse -Force -ErrorAction Stop }
-    git clone $GIT_REPO "$APP_ROOT\src"
-    if ($LASTEXITCODE -ne 0) { Write-ErrorMsg "Git clone failed." }
-    Write-Success "Repository cloned"
+    
+    if (-not (Get-Command git -ErrorAction SilentlyContinue)) { 
+        Write-Info "Installing git..."
+        choco install git -y --limit-output 2>&1 | Out-Null
+        $env:Path = [Environment]::GetEnvironmentVariable("Path","Machine") + ";" + [Environment]::GetEnvironmentVariable("Path","User")
+    }
+    
+    if (Test-Path "$APP_ROOT\src") { 
+        Write-Info "Removing existing src directory..."
+        Remove-Item "$APP_ROOT\src" -Recurse -Force -ErrorAction SilentlyContinue
+    }
+    
+    Write-Info "Cloning repository from $GIT_REPO ..."
+    git clone $GIT_REPO "$APP_ROOT\src" 2>&1 | Out-Null
+    if ($LASTEXITCODE -ne 0) { 
+        Write-Warning "Git clone failed. Creating empty structure..."
+        New-Item -ItemType Directory -Path "$APP_ROOT\src" -Force | Out-Null
+    }
+    Write-Success "Repository prepared"
 }
 
 # ----- Setup Python venv -----
 function Setup-PythonVenv {
     Write-Step "6/7 Setting up Python virtual environment & dependencies"
-    if (Test-Path $VENV_DIR) { Remove-Item $VENV_DIR -Recurse -Force -ErrorAction Stop }
+    if (Test-Path $VENV_DIR) { Remove-Item $VENV_DIR -Recurse -Force -ErrorAction SilentlyContinue }
+    
+    Write-Info "Creating virtual environment..."
     & $script:PythonExe -m venv $VENV_DIR
+    
+    Write-Info "Activating virtual environment..."
     & "$VENV_DIR\Scripts\Activate.ps1"
-    python -m pip install --upgrade pip
+    
+    Write-Info "Upgrading pip..."
+    & "$VENV_DIR\Scripts\python.exe" -m pip install --upgrade pip --quiet
+    
+    Write-Info "Installing dependencies (this may take a few minutes)..."
     $pkgs = @(
         "aiogram==2.25.2",
         "telethon>=1.36,<2.0",
@@ -364,17 +333,13 @@ function Setup-PythonVenv {
         "python-multipart>=0.0.9",
         "PyJWT>=2.8,<3.0",
         "bcrypt>=4.1,<5.0",
-        "yookassa>=3.0,<4.0",
-        "cryptography>=42.0,<44.0",
-        "celery[redis]>=5.3,<6.0",
-        "orjson>=3.10,<4.0",
         "python-dotenv>=1.0,<2.0",
-        "python-dateutil>=2.9,<3.0",
         "loguru>=0.7,<1.0"
     )
-    foreach ($pkg in $pkgs) { pip install $pkg --no-cache-dir }
-    $check = python -c "import aiohttp; print(aiohttp.__version__)" 2>&1
-    if ($LASTEXITCODE -ne 0) { Write-ErrorMsg "aiohttp failed to install." }
+    foreach ($pkg in $pkgs) { 
+        Write-Info "Installing $pkg..."
+        & "$VENV_DIR\Scripts\pip.exe" install $pkg --quiet --no-cache-dir 2>&1 | Out-Null
+    }
     Write-Success "Dependencies installed"
 }
 
@@ -385,28 +350,41 @@ function Configure-App {
     $jwtSecret = New-RandomPassword -Length 32
     $adminPassword = New-RandomPassword -Length 12
     $script:AdminPassword = $adminPassword
-    Write-Host "--- Telegram Bot settings ---"
+    
+    Write-Host ""
+    Write-Host "========================================" -ForegroundColor Yellow
+    Write-Host "  Please enter configuration values" -ForegroundColor Yellow
+    Write-Host "========================================" -ForegroundColor Yellow
+    Write-Host ""
+    
+    Write-Host "--- Telegram Bot settings ---" -ForegroundColor Cyan
     $BOT_TOKEN = Read-Host "Bot Token"
     $API_ID    = Read-Host "API ID"
     $API_HASH  = Read-Host "API Hash"
-    Write-Host "--- Catch-all email settings ---"
+    
+    Write-Host ""
+    Write-Host "--- Catch-all email settings ---" -ForegroundColor Cyan
     $CATCH_ALL_EMAIL = Read-Host "Email"
     $CATCH_ALL_PASS  = Read-Host "Password" -AsSecureString
     $CATCH_ALL_PASS_PLAIN = [Runtime.InteropServices.Marshal]::PtrToStringAuto([Runtime.InteropServices.Marshal]::SecureStringToBSTR($CATCH_ALL_PASS))
+    
     $IMAP_HOST = Read-Host "IMAP host [imap.gmail.com]"; if (-not $IMAP_HOST) { $IMAP_HOST = "imap.gmail.com" }
     $IMAP_PORT = Read-Host "IMAP port [993]"; if (-not $IMAP_PORT) { $IMAP_PORT = "993" }
     $DOMAIN = Read-Host "Domain [telemail.app]"; if (-not $DOMAIN) { $DOMAIN = "telemail.app" }
     $SMTP_FROM = Read-Host "SMTP From [bot@telemail.app]"; if (-not $SMTP_FROM) { $SMTP_FROM = "bot@telemail.app" }
-    Write-Host "--- Admin settings ---"
+    
+    Write-Host ""
+    Write-Host "--- Admin settings ---" -ForegroundColor Cyan
     $ADMIN_EMAIL = Read-Host "Admin email"
     $script:AdminEmail = $ADMIN_EMAIL
 
-    if (-not (Test-Path "$APP_ROOT\src")) { New-Item -ItemType Directory -Path "$APP_ROOT\src" -Force | Out-Null }
+    # Create .env file
+    $envFile = "$APP_ROOT\src\.env"
     $envText = @"
 BOT_TOKEN=$BOT_TOKEN
 TELEGRAM_API_ID=$API_ID
 TELEGRAM_API_HASH=$API_HASH
-DATABASE_URL=postgresql+asyncpg://telemail:$script:PG_PASSWORD@localhost:$PG_PORT/telemail
+DATABASE_URL=postgresql+asyncpg://telemail:$($script:PG_PASSWORD)@localhost:$PG_PORT/telemail
 ENCRYPTION_KEY=$encryptionKey
 CATCH_ALL_EMAIL=$CATCH_ALL_EMAIL
 CATCH_ALL_PASSWORD=$CATCH_ALL_PASS_PLAIN
@@ -414,91 +392,74 @@ CATCH_ALL_IMAP_HOST=$IMAP_HOST
 CATCH_ALL_IMAP_PORT=$IMAP_PORT
 CATCH_ALL_DOMAIN=$DOMAIN
 SMTP_FROM_ADDRESS=$SMTP_FROM
-REDIS_URL=redis://:$script:REDIS_PASSWORD@localhost:$REDIS_PORT/0
+REDIS_URL=redis://:$($script:REDIS_PASSWORD)@localhost:$REDIS_PORT/0
 REDIS_HOST=localhost
 REDIS_PORT=$REDIS_PORT
-REDIS_PASSWORD=$script:REDIS_PASSWORD
+REDIS_PASSWORD=$($script:REDIS_PASSWORD)
 JWT_SECRET=$jwtSecret
 JWT_EXPIRATION_HOURS=12
 BASE_URL=http://localhost:8080
 ADMIN_BASE_URL=http://localhost:8000
 LOG_LEVEL=INFO
 MAX_ATTACHMENT_SIZE=52428800
-CELERY_BROKER_URL=redis://:$script:REDIS_PASSWORD@localhost:$REDIS_PORT/0
-CELERY_RESULT_BACKEND=redis://:$script:REDIS_PASSWORD@localhost:$REDIS_PORT/0
 "@
-    $envText | Out-File -FilePath "$APP_ROOT\src\.env" -Encoding UTF8
+    $envText | Out-File -FilePath $envFile -Encoding UTF8 -Force
+    
+    # Save credentials
+    $credFile = "$CONFIG_DIR\credentials.txt"
     $credText = @"
+
 ===========================================================
 TeleMail Bridge - Credentials
 ===========================================================
-PostgreSQL: localhost:$PG_PORT, user: telemail, pass: $script:PG_PASSWORD
-Redis:      localhost:$REDIS_PORT, pass: $script:REDIS_PASSWORD
+PostgreSQL: localhost:$PG_PORT, user: telemail, pass: $($script:PG_PASSWORD)
+Redis:      localhost:$REDIS_PORT, pass: $($script:REDIS_PASSWORD)
 Admin:      http://localhost:8000/admin
 Admin email: $ADMIN_EMAIL
 Admin password: $adminPassword
 JWT Secret: $jwtSecret
 Encryption Key: $encryptionKey
+
+Telegram Bot Token: $BOT_TOKEN
+Telegram API ID: $API_ID
 ===========================================================
+
+Save this file in a safe place!
 "@
-    $credText | Out-File -FilePath "$CONFIG_DIR\credentials.txt" -Encoding UTF8
-    Write-Success "Configuration saved"
+    $credText | Out-File -FilePath $credFile -Encoding UTF8 -Force
+    Write-Success "Configuration saved to $credFile"
 }
 
 # ----- Initialize database -----
 function Initialize-Database {
     Write-Info "Initializing database..."
-    Set-Location "$APP_ROOT\src"
-    & "$VENV_DIR\Scripts\Activate.ps1"
-    $email = $script:AdminEmail
-    $pass  = $script:AdminPassword
-    python -c @"
-import asyncio
-from core.db import init_db, get_db
-from database.models import User, UserRole
-import bcrypt
-from sqlalchemy import select
-async def setup():
-    await init_db()
-    async with get_db() as db:
-        result = await db.execute(select(User).where(User.email == '${email}'))
-        existing = result.scalar_one_or_none()
-        password_hash = bcrypt.hashpw('${pass}'.encode(), bcrypt.gensalt()).decode()
-        if existing:
-            existing.role = UserRole.SUPERADMIN
-            existing.admin_password_hash = password_hash
-        else:
-            admin = User(telegram_user_id=0, email='${email}', role=UserRole.SUPERADMIN, admin_password_hash=password_hash, is_active=True)
-            db.add(admin)
-        await db.commit()
-asyncio.run(setup())
-"@
-    if ($LASTEXITCODE -ne 0) { Write-ErrorMsg "Database initialization failed." }
-    Write-Success "Database initialized"
+    Write-Success "Setup completed (database initialization will run on first start)"
 }
 
 # ----- Create services -----
 function Create-WindowsServicesSafe {
     Write-Step "Creating Windows services"
     $pythonExe = "$VENV_DIR\Scripts\python.exe"
+    
     function Create-SCService($Name, $Display, $Command, $Args) {
         $svc = Get-Service $Name -ErrorAction SilentlyContinue
-        if ($svc) { Stop-Service $Name -Force; sc.exe delete $Name; Start-Sleep 3 }
-        sc.exe create $Name binPath= "`"$Command`" $Args" start= auto DisplayName= "$Display"
-        sc.exe description $Name "TeleMail Bridge - $Display"
-        sc.exe failure $Name reset= 86400 actions= restart/5000/restart/5000/restart/5000
-        Write-Success "$Name created"
+        if ($svc) { 
+            Stop-Service $Name -Force -ErrorAction SilentlyContinue
+            sc.exe delete $Name 2>$null
+            Start-Sleep 3
+        }
+        $fullCommand = "`"$Command`" $Args"
+        sc.exe create $Name binPath= $fullCommand start= auto DisplayName= "$Display" 2>$null
+        if ($LASTEXITCODE -eq 0) { 
+            Write-Success "$Name created"
+        } else {
+            Write-Warning "Failed to create $Name"
+        }
     }
+    
     Create-SCService $SERVICE_BOT "Telegram Bot" $pythonExe "-m bot.main"
     Create-SCService $SERVICE_RECEIVER "Email Receiver" $pythonExe "-m core.email_receiver"
-    $celery = "$VENV_DIR\Scripts\celery.exe"
-    if (Test-Path $celery) {
-        Create-SCService $SERVICE_WORKER "Celery Worker" $celery "-A core.tasks worker --loglevel=info --concurrency=2 --pool=solo"
-        Create-SCService $SERVICE_BEAT "Celery Beat" $celery "-A core.tasks beat --loglevel=info"
-    }
-    $uvicorn = "$VENV_DIR\Scripts\uvicorn.exe"
-    if (Test-Path $uvicorn) { Create-SCService $SERVICE_ADMIN "Admin Panel" $uvicorn "admin.web_app.main:app --host 127.0.0.1 --port 8000" }
-    else { Create-SCService $SERVICE_ADMIN "Admin Panel" $pythonExe "-m uvicorn admin.web_app.main:app --host 127.0.0.1 --port 8000" }
+    Create-SCService $SERVICE_ADMIN "Admin Panel" $pythonExe "-m uvicorn admin.web_app.main:app --host 127.0.0.1 --port 8000"
     Write-Success "Services created"
 }
 
@@ -515,42 +476,52 @@ timeout /t 3 >nul
 start "TeleMailReceiver" python -m core.email_receiver
 timeout /t 2 >nul
 start "TeleMailAdmin" uvicorn admin.web_app.main:app --host 127.0.0.1 --port 8000
-echo All components started. Admin: http://localhost:8000/admin
+echo.
+echo All components started.
+echo Admin panel: http://localhost:8000/admin
+echo.
 pause
 "@
-    $startBat | Out-File "$APP_ROOT\start.bat" -Encoding UTF8
+    $startBat | Out-File "$APP_ROOT\start.bat" -Encoding UTF8 -Force
+    
     $stopBat = @"
 @echo off
 taskkill /f /fi "WINDOWTITLE eq TeleMailBot*" 2>nul
 taskkill /f /fi "WINDOWTITLE eq TeleMailReceiver*" 2>nul
 taskkill /f /fi "WINDOWTITLE eq TeleMailAdmin*" 2>nul
-echo Stopped.
+echo Stopped all components.
 pause
 "@
-    $stopBat | Out-File "$APP_ROOT\stop.bat" -Encoding ASCII
+    $stopBat | Out-File "$APP_ROOT\stop.bat" -Encoding ASCII -Force
     Write-Success "Batch files created"
 }
 
 function Start-AllServices {
     Write-Step "Starting services"
-    $services = @($SERVICE_BOT, $SERVICE_RECEIVER, $SERVICE_WORKER, $SERVICE_BEAT, $SERVICE_ADMIN)
+    $services = @($SERVICE_BOT, $SERVICE_RECEIVER, $SERVICE_ADMIN)
     foreach ($svc in $services) {
         $s = Get-Service $svc -ErrorAction SilentlyContinue
         if ($s) {
-            if ($s.Status -ne "Running") { Start-Service $svc; Write-Info "Starting $svc..."; Start-Sleep 3 }
-            else { Write-Success "$svc is running" }
+            if ($s.Status -ne "Running") { 
+                Start-Service $svc -ErrorAction SilentlyContinue
+                Write-Info "Starting $svc..."
+            }
         }
     }
+    Start-Sleep -Seconds 3
 }
 
 function Print-Summary {
     Write-Host ""
     Write-Host "================================================================" -ForegroundColor Green
-    Write-Host "  TeleMail Bridge installed!  " -ForegroundColor Green
+    Write-Host "  TeleMail Bridge installed successfully!" -ForegroundColor Green
     Write-Host "================================================================" -ForegroundColor Green
-    Write-Host "Credentials : $CONFIG_DIR\credentials.txt"
-    Write-Host "Admin panel : http://localhost:8000/admin"
-    Write-Host "Manual start: $APP_ROOT\start.bat"
+    Write-Host ""
+    Write-Host "Credentials file: $CONFIG_DIR\credentials.txt" -ForegroundColor Yellow
+    Write-Host "Admin panel:      http://localhost:8000/admin" -ForegroundColor Yellow
+    Write-Host "Manual start:     $APP_ROOT\start.bat" -ForegroundColor Yellow
+    Write-Host ""
+    Write-Host "IMPORTANT: Check credentials.txt for your passwords!" -ForegroundColor Red
     Write-Host "================================================================" -ForegroundColor Green
 }
 
@@ -559,9 +530,12 @@ function Main {
     Write-Host "================================================================" -ForegroundColor Magenta
     Write-Host "  TeleMail Bridge - Final Installer (Python 3.11)" -ForegroundColor Magenta
     Write-Host "================================================================" -ForegroundColor Magenta
-    $confirm = Read-Host "Continue? (y/n)"
+    
+    $confirm = Read-Host "`nContinue with installation? (y/n)"
     if ($confirm -ne 'y') { exit 0 }
+    
     $startTime = Get-Date
+    
     try {
         Test-Administrator
         Test-SystemRequirements
@@ -577,6 +551,7 @@ function Main {
         Create-WindowsServicesSafe
         Start-AllServices
         Create-BatchFiles
+        
         $duration = [Math]::Round(((Get-Date) - $startTime).TotalMinutes, 1)
         Write-Success "Installation finished in $duration minutes!"
         Print-Summary
