@@ -14,52 +14,63 @@ from sqlalchemy import text, func, and_, or_, desc, asc, select, String, cast
 from sqlalchemy.orm import selectinload
 
 from core.config import settings
-from database.models import Base, User, ChatMapping, Payment, AdminAction, MessageLog
+from database.models import (
+    Base, User, ChatMapping, Payment, AdminAction, MessageLog,
+    SubscriptionTier, PaymentStatus
+)
 
 # Глобальные объекты
 _engine: Optional[AsyncEngine] = None
 _session_factory: Optional[async_sessionmaker] = None
+_initialized = False
+
+
+async def _ensure_initialized():
+    """Автоматическая инициализация движка и фабрики сессий при первом обращении."""
+    global _engine, _session_factory, _initialized
+    if _initialized:
+        return
+    if _engine is None:
+        _engine = create_async_engine(
+            settings.DATABASE_URL,
+            pool_size=settings.DATABASE_POOL_SIZE,
+            max_overflow=settings.DATABASE_MAX_OVERFLOW,
+            echo=False,
+            pool_pre_ping=True,
+            pool_recycle=3600,
+        )
+    if _session_factory is None:
+        _session_factory = async_sessionmaker(
+            _engine,
+            class_=AsyncSession,
+            expire_on_commit=False,
+            autoflush=False
+        )
+    # Создаём таблицы, если их ещё нет
+    async with _engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+    _initialized = True
 
 
 async def init_db():
-    """Инициализация подключения к БД"""
-    global _engine, _session_factory
-
-    _engine = create_async_engine(
-        settings.DATABASE_URL,
-        pool_size=settings.DATABASE_POOL_SIZE,
-        max_overflow=settings.DATABASE_MAX_OVERFLOW,
-        echo=False,
-        pool_pre_ping=True,
-        pool_recycle=3600,
-    )
-
-    _session_factory = async_sessionmaker(
-        _engine,
-        class_=AsyncSession,
-        expire_on_commit=False,
-        autoflush=False
-    )
-
-    async with _engine.begin() as conn:
-        await conn.run_sync(Base.metadata.create_all)
+    """Явная инициализация (можно вызывать многократно)."""
+    await _ensure_initialized()
 
 
 async def close_db():
-    """Закрытие соединений с БД"""
-    global _engine
-
+    """Закрытие соединений с БД."""
+    global _engine, _session_factory, _initialized
     if _engine:
         await _engine.dispose()
         _engine = None
+        _session_factory = None
+        _initialized = False
 
 
 @asynccontextmanager
 async def get_db() -> AsyncGenerator[AsyncSession, None]:
-    """Контекстный менеджер для получения сессии БД"""
-    if not _session_factory:
-        raise RuntimeError("База данных не инициализирована. Вызовите init_db()")
-
+    """Контекстный менеджер для получения асинхронной сессии."""
+    await _ensure_initialized()
     async with _session_factory() as session:
         try:
             yield session
@@ -71,8 +82,7 @@ async def get_db() -> AsyncGenerator[AsyncSession, None]:
             await session.close()
 
 
-# ========= МЕТОДЫ ДЛЯ USERS =========
-
+# ======================== ПОЛЬЗОВАТЕЛИ ========================
 async def get_user_by_telegram_id(telegram_user_id: int) -> Optional[User]:
     async with get_db() as db:
         result = await db.execute(
@@ -83,25 +93,19 @@ async def get_user_by_telegram_id(telegram_user_id: int) -> Optional[User]:
 
 async def get_user(user_id: int) -> Optional[User]:
     async with get_db() as db:
-        result = await db.execute(
-            select(User).where(User.id == user_id)
-        )
+        result = await db.execute(select(User).where(User.id == user_id))
         return result.scalar_one_or_none()
 
 
 async def get_user_by_email(email: str) -> Optional[User]:
     async with get_db() as db:
-        result = await db.execute(
-            select(User).where(User.email == email)
-        )
+        result = await db.execute(select(User).where(User.email == email))
         return result.scalar_one_or_none()
 
 
 async def get_user_by_api_key(api_key: str) -> Optional[User]:
     async with get_db() as db:
-        result = await db.execute(
-            select(User).where(User.api_key == api_key)
-        )
+        result = await db.execute(select(User).where(User.api_key == api_key))
         return result.scalar_one_or_none()
 
 
@@ -216,7 +220,6 @@ async def get_users_paginated(
         query = select(User).where(User.is_deleted == False)
 
         conditions = []
-
         if search:
             search_term = f"%{search}%"
             conditions.append(
@@ -226,10 +229,8 @@ async def get_users_paginated(
                     User.phone_number.ilike(search_term)
                 )
             )
-
         if tier:
             conditions.append(User.subscription_tier == tier)
-
         if status == 'active':
             conditions.append(User.is_active == True)
             conditions.append(User.is_banned == False)
@@ -258,7 +259,6 @@ async def get_users_paginated(
 
         result = await db.execute(query)
         users = result.scalars().all()
-
         return users, total
 
 
@@ -303,8 +303,7 @@ async def get_daily_active_stats(days: int = 30) -> List[Dict]:
         ]
 
 
-# ========= МЕТОДЫ ДЛЯ CHAT MAPPINGS =========
-
+# ======================== ЧАТЫ ========================
 async def get_chat_mapping(user_id: int, telegram_chat_id: int) -> Optional[ChatMapping]:
     async with get_db() as db:
         result = await db.execute(
@@ -360,8 +359,7 @@ async def get_user_chat_mappings(user_id: int) -> List[ChatMapping]:
         return result.scalars().all()
 
 
-# ========= МЕТОДЫ ДЛЯ ПЛАТЕЖЕЙ =========
-
+# ======================== ПЛАТЕЖИ ========================
 async def get_payment(payment_id: int) -> Optional[Payment]:
     async with get_db() as db:
         result = await db.execute(
@@ -438,8 +436,7 @@ async def count_pending_payments() -> int:
         return result.scalar() or 0
 
 
-# ========= МЕТОДЫ ДЛЯ СООБЩЕНИЙ =========
-
+# ======================== СООБЩЕНИЯ ========================
 async def log_message(**kwargs) -> MessageLog:
     async with get_db() as db:
         log_entry = MessageLog(**kwargs)
@@ -501,12 +498,10 @@ async def calculate_delivery_rate(since: date) -> float:
             )
         )
         delivered = delivered_result.scalar() or 0
-
         return (delivered / total) * 100
 
 
-# ========= МЕТОДЫ ДЛЯ АДМИНСКИХ ДЕЙСТВИЙ =========
-
+# ======================== ДЕЙСТВИЯ АДМИНИСТРАТОРОВ ========================
 async def log_admin_action(**kwargs) -> AdminAction:
     async with get_db() as db:
         action = AdminAction(**kwargs)
@@ -539,7 +534,3 @@ async def execute(sql: str, params: dict = None) -> Any:
     async with get_db() as db:
         result = await db.execute(text(sql), params or {})
         return result
-
-
-# Импорт здесь, чтобы избежать циклических импортов
-from database.models import SubscriptionTier, PaymentStatus
