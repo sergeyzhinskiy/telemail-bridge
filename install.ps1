@@ -4,6 +4,7 @@
 .DESCRIPTION
     Installs TeleMail Bridge on Windows 10/11 without Docker.
     Run as Administrator:
+      chcp 65001
       Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
       .\install.ps1
 #>
@@ -12,6 +13,10 @@
 
 $ErrorActionPreference = "Stop"
 $ProgressPreference = "SilentlyContinue"
+
+# ----- Set UTF-8 encoding for console -----
+chcp 65001 >$null 2>&1
+[Console]::OutputEncoding = [System.Text.Encoding]::UTF8
 
 # ----- Configuration -----
 $APP_ROOT = "C:\TeleMailBridge"
@@ -98,6 +103,34 @@ function New-RandomPassword {
     return $password
 }
 
+function Set-PgHbaTrust {
+    param([string]$PgDataDir)
+    $hbaFile = Join-Path $PgDataDir "pg_hba.conf"
+    if (-not (Test-Path $hbaFile)) { Write-ErrorMsg "pg_hba.conf not found at $hbaFile" }
+    
+    # Backup
+    Copy-Item $hbaFile "$hbaFile.backup" -Force
+    
+    # Replace scram-sha-256 and md5 with trust for local connections
+    $content = Get-Content $hbaFile -Encoding UTF8
+    $content = $content -replace 'scram-sha-256', 'trust'
+    $content = $content -replace 'md5', 'trust'
+    $content | Set-Content $hbaFile -Encoding UTF8
+    
+    Write-Info "pg_hba.conf set to trust mode"
+}
+
+function Restore-PgHba {
+    param([string]$PgDataDir)
+    $hbaFile = Join-Path $PgDataDir "pg_hba.conf"
+    $backupFile = "$hbaFile.backup"
+    if (Test-Path $backupFile) {
+        Copy-Item $backupFile $hbaFile -Force
+        Remove-Item $backupFile -Force
+        Write-Info "pg_hba.conf restored"
+    }
+}
+
 # ----- Install Python 3.11 -----
 function Install-Python311 {
     Write-Step "1/7 Installing Python 3.11"
@@ -136,18 +169,20 @@ function Install-SystemPackages {
 function Install-PostgreSQL {
     Write-Step "3/7 Installing PostgreSQL 16"
     if (-not $script:PG_PASSWORD) { $script:PG_PASSWORD = New-RandomPassword -Length 20 }
+    
     $pgBin = "C:\Program Files\PostgreSQL\$PG_VERSION\bin"
+    $pgDataDir = "C:\Program Files\PostgreSQL\$PG_VERSION\data"
     $pgService = Get-Service "postgresql*" -ErrorAction SilentlyContinue
     
     if (-not $pgService) {
-        # Первая установка
+        # First install
         $pgInstaller = "$env:TEMP\postgresql-16.exe"
         Invoke-WebRequest -Uri "https://get.enterprisedb.com/postgresql/postgresql-16.0-1-windows-x64.exe" -OutFile $pgInstaller
-        Start-Process -FilePath $pgInstaller -ArgumentList "--mode unattended --superpassword $script:PG_PASSWORD --servicename postgresql-$PG_VERSION --serviceaccount postgres --serverport $PG_PORT --datadir `"$env:ProgramFiles\PostgreSQL\$PG_VERSION\data`" --install_runtimes 0" -Wait -NoNewWindow
+        Start-Process -FilePath $pgInstaller -ArgumentList "--mode unattended --superpassword $script:PG_PASSWORD --servicename postgresql-$PG_VERSION --serviceaccount postgres --serverport $PG_PORT --datadir `"$pgDataDir`" --install_runtimes 0" -Wait -NoNewWindow
         Remove-Item $pgInstaller -Force
         Start-Sleep -Seconds 10
     } else {
-        # Служба уже есть – просто запускаем
+        # Service exists - ensure running
         if ((Get-Service $pgService.Name).Status -ne "Running") { 
             Start-Service $pgService.Name 
             Start-Sleep -Seconds 10
@@ -158,21 +193,36 @@ function Install-PostgreSQL {
     $env:Path += ";$pgBin"
     [Environment]::SetEnvironmentVariable("Path", [Environment]::GetEnvironmentVariable("Path","Machine") + ";$pgBin", "Machine")
 
-    # Пробуем подключиться к postgres без пароля (trust)
-    $env:PGPASSWORD = ""
+    # Temporarily set trust authentication
+    Set-PgHbaTrust -PgDataDir $pgDataDir
     
-    # Создаём пользователя telemail через psql с доверенным входом
-    $result = & "$pgBin\psql.exe" -U postgres -h localhost -p $PG_PORT -c "ALTER USER telemail WITH PASSWORD '$script:PG_PASSWORD';" 2>&1
-    if ($LASTEXITCODE -ne 0) {
-        # Возможно, пользователь telemail не существует – создаём
-        $result = & "$pgBin\psql.exe" -U postgres -h localhost -p $PG_PORT -c "CREATE USER telemail WITH PASSWORD '$script:PG_PASSWORD';" 2>&1
+    # Reload PostgreSQL config
+    & "$pgBin\pg_ctl.exe" -D "$pgDataDir" reload 2>$null
+    Start-Sleep -Seconds 2
+
+    try {
+        # Now we can connect without password
+        $env:PGPASSWORD = ""
+        
+        # Create or alter user telemail
+        $result = & "$pgBin\psql.exe" -U postgres -h localhost -p $PG_PORT -c "ALTER USER telemail WITH PASSWORD '$script:PG_PASSWORD';" 2>&1
+        if ($LASTEXITCODE -ne 0) {
+            & "$pgBin\psql.exe" -U postgres -h localhost -p $PG_PORT -c "CREATE USER telemail WITH PASSWORD '$script:PG_PASSWORD';" 2>&1
+        }
+        
+        # Create database
+        & "$pgBin\psql.exe" -U postgres -h localhost -p $PG_PORT -c "CREATE DATABASE telemail OWNER telemail;" 2>$null
+        & "$pgBin\psql.exe" -U postgres -h localhost -p $PG_PORT -c "GRANT ALL PRIVILEGES ON DATABASE telemail TO telemail;" 2>$null
+        
+        Write-Success "PostgreSQL 16 configured"
+    } catch {
+        Write-ErrorMsg "Failed to configure PostgreSQL: $_"
+    } finally {
+        # Restore pg_hba.conf
+        Restore-PgHba -PgDataDir $pgDataDir
+        & "$pgBin\pg_ctl.exe" -D "$pgDataDir" reload 2>$null
+        Write-Info "Authentication restored"
     }
-    
-    # Создаём базу данных
-    & "$pgBin\psql.exe" -U postgres -h localhost -p $PG_PORT -c "CREATE DATABASE telemail OWNER telemail;" 2>$null
-    & "$pgBin\psql.exe" -U postgres -h localhost -p $PG_PORT -c "GRANT ALL PRIVILEGES ON DATABASE telemail TO telemail;" 2>$null
-    
-    Write-Success "PostgreSQL 16 installed"
 }
 
 # ----- Install Redis -----
@@ -260,11 +310,11 @@ function Configure-App {
     $jwtSecret = New-RandomPassword -Length 32
     $adminPassword = New-RandomPassword -Length 12
     $script:AdminPassword = $adminPassword
-    Write-Host "`n--- Telegram Bot settings ---"
+    Write-Host "--- Telegram Bot settings ---"
     $BOT_TOKEN = Read-Host "Bot Token"
     $API_ID    = Read-Host "API ID"
     $API_HASH  = Read-Host "API Hash"
-    Write-Host "`n--- Catch-all email settings ---"
+    Write-Host "--- Catch-all email settings ---"
     $CATCH_ALL_EMAIL = Read-Host "Email"
     $CATCH_ALL_PASS  = Read-Host "Password" -AsSecureString
     $CATCH_ALL_PASS_PLAIN = [Runtime.InteropServices.Marshal]::PtrToStringAuto([Runtime.InteropServices.Marshal]::SecureStringToBSTR($CATCH_ALL_PASS))
@@ -272,7 +322,7 @@ function Configure-App {
     $IMAP_PORT = Read-Host "IMAP port [993]"; if (-not $IMAP_PORT) { $IMAP_PORT = "993" }
     $DOMAIN = Read-Host "Domain [telemail.app]"; if (-not $DOMAIN) { $DOMAIN = "telemail.app" }
     $SMTP_FROM = Read-Host "SMTP From [bot@telemail.app]"; if (-not $SMTP_FROM) { $SMTP_FROM = "bot@telemail.app" }
-    Write-Host "`n--- Admin settings ---"
+    Write-Host "--- Admin settings ---"
     $ADMIN_EMAIL = Read-Host "Admin email"
     $script:AdminEmail = $ADMIN_EMAIL
 
@@ -302,7 +352,7 @@ MAX_ATTACHMENT_SIZE=52428800
 CELERY_BROKER_URL=redis://:$script:REDIS_PASSWORD@localhost:$REDIS_PORT/0
 CELERY_RESULT_BACKEND=redis://:$script:REDIS_PASSWORD@localhost:$REDIS_PORT/0
 "@
-    $envText | Out-File -FilePath "$APP_ROOT\src\.env" -Encoding ASCII
+    $envText | Out-File -FilePath "$APP_ROOT\src\.env" -Encoding UTF8
     $credText = @"
 ===========================================================
 TeleMail Bridge - Credentials
@@ -316,7 +366,7 @@ JWT Secret: $jwtSecret
 Encryption Key: $encryptionKey
 ===========================================================
 "@
-    $credText | Out-File -FilePath "$CONFIG_DIR\credentials.txt" -Encoding ASCII
+    $credText | Out-File -FilePath "$CONFIG_DIR\credentials.txt" -Encoding UTF8
     Write-Success "Configuration saved"
 }
 
@@ -382,6 +432,7 @@ function Create-BatchFiles {
     Write-Info "Creating start/stop batch files..."
     $startBat = @"
 @echo off
+chcp 65001 >nul
 cd /d "$APP_ROOT\src"
 call "$VENV_DIR\Scripts\activate.bat"
 start "TeleMailBot" python -m bot.main
@@ -392,7 +443,7 @@ start "TeleMailAdmin" uvicorn admin.web_app.main:app --host 127.0.0.1 --port 800
 echo All components started. Admin: http://localhost:8000/admin
 pause
 "@
-    $startBat | Out-File "$APP_ROOT\start.bat" -Encoding ASCII
+    $startBat | Out-File "$APP_ROOT\start.bat" -Encoding UTF8
     $stopBat = @"
 @echo off
 taskkill /f /fi "WINDOWTITLE eq TeleMailBot*" 2>nul
@@ -430,8 +481,8 @@ function Print-Summary {
 
 # ----- Main -----
 function Main {
-    Write-Host "`n================================================================" -ForegroundColor Magenta
-    Write-Host "  TeleMail Bridge – Final Installer (Python 3.11)" -ForegroundColor Magenta
+    Write-Host "================================================================" -ForegroundColor Magenta
+    Write-Host "  TeleMail Bridge - Final Installer (Python 3.11)" -ForegroundColor Magenta
     Write-Host "================================================================" -ForegroundColor Magenta
     $confirm = Read-Host "Continue? (y/n)"
     if ($confirm -ne 'y') { exit 0 }
