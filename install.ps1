@@ -19,7 +19,7 @@ $VENV_DIR = "$APP_ROOT\venv"
 $LOG_DIR  = "$APP_ROOT\logs"
 $DATA_DIR = "$APP_ROOT\data"
 $CONFIG_DIR = "$APP_ROOT\config"
-$GIT_REPO = "https://github.com/yourusername/telemail-bridge.git"   # <-- change to your repo
+$GIT_REPO = "https://github.com/sergeyzhinskiy/telemail-bridge.git"   # <-- change to your repo
 
 $PG_VERSION = "16"
 $PG_PORT    = 5432
