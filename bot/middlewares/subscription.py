@@ -1,4 +1,4 @@
-# bot/middlewares/subscription_check.py
+# bot/middlewares/subscription.py
 from aiogram import types
 from aiogram.dispatcher.middlewares import BaseMiddleware
 
