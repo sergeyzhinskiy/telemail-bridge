@@ -1,0 +1,280 @@
+/* admin/static/css/admin.css */
+
+/* ===== Основные стили ===== */
+:root {
+    --primary: #2AABEE;
+    --primary-dark: #1a8fd4;
+    --sidebar-bg: #1e293b;
+    --sidebar-text: #cbd5e1;
+    --topbar-bg: #0f172a;
+}
+
+* {
+    margin: 0;
+    padding: 0;
+    box-sizing: border-box;
+}
+
+body {
+    font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+    background-color: #f8f9fc;
+}
+
+/* ===== Топбар ===== */
+.sb-topnav {
+    background-color: var(--topbar-bg) !important;
+    box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+}
+
+.sb-topnav .navbar-brand {
+    font-weight: 700;
+    font-size: 1.2rem;
+    letter-spacing: -0.5px;
+}
+
+/* ===== Боковое меню ===== */
+#layoutSidenav {
+    display: flex;
+}
+
+#layoutSidenav_nav {
+    width: 250px;
+    min-height: 100vh;
+    background-color: var(--sidebar-bg);
+    transition: all 0.3s;
+}
+
+.sb-sidenav {
+    padding-top: 20px;
+}
+
+.sb-sidenav-menu-heading {
+    color: #64748b;
+    font-size: 0.75rem;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 1px;
+    padding: 15px 20px 5px;
+}
+
+.sb-sidenav .nav-link {
+    color: var(--sidebar-text);
+    padding: 12px 20px;
+    border-left: 3px solid transparent;
+    transition: all 0.2s;
+}
+
+.sb-sidenav .nav-link:hover {
+    color: white;
+    background-color: rgba(255,255,255,0.05);
+}
+
+.sb-sidenav .nav-link.active {
+    color: white;
+    background-color: rgba(42, 171, 238, 0.15);
+    border-left-color: var(--primary);
+}
+
+.sb-nav-link-icon {
+    margin-right: 10px;
+    width: 20px;
+    text-align: center;
+}
+
+.sb-sidenav-footer {
+    position: absolute;
+    bottom: 0;
+    width: 100%;
+    padding: 15px 20px;
+    background-color: rgba(0,0,0,0.2);
+    color: #64748b;
+    font-size: 0.85rem;
+}
+
+/* ===== Основной контент ===== */
+#layoutSidenav_content {
+    flex: 1;
+    padding-left: 250px;
+}
+
+main {
+    padding: 20px 10px;
+    min-height: calc(100vh - 140px);
+}
+
+/* ===== Карточки ===== */
+.card {
+    border: none;
+    border-radius: 12px;
+    box-shadow: 0 2px 12px rgba(0,0,0,0.08);
+    margin-bottom: 24px;
+}
+
+.card-header {
+    background-color: white;
+    border-bottom: 1px solid #e9ecef;
+    font-weight: 600;
+    padding: 15px 20px;
+    border-radius: 12px 12px 0 0 !important;
+}
+
+/* ===== Таблицы ===== */
+.table {
+    margin-bottom: 0;
+}
+
+.table th {
+    border-top: none;
+    font-weight: 600;
+    font-size: 0.85rem;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    color: #64748b;
+}
+
+.table td {
+    vertical-align: middle;
+}
+
+/* ===== Бейджи ===== */
+.badge {
+    font-weight: 500;
+    padding: 5px 10px;
+    border-radius: 6px;
+}
+
+/* ===== Кнопки ===== */
+.btn {
+    border-radius: 8px;
+    font-weight: 500;
+    padding: 8px 16px;
+}
+
+.btn-primary {
+    background-color: var(--primary);
+    border-color: var(--primary);
+}
+
+.btn-primary:hover {
+    background-color: var(--primary-dark);
+    border-color: var(--primary-dark);
+}
+
+/* ===== Формы ===== */
+.form-control {
+    border-radius: 8px;
+    border: 1px solid #e2e8f0;
+    padding: 10px 15px;
+}
+
+.form-control:focus {
+    border-color: var(--primary);
+    box-shadow: 0 0 0 0.2rem rgba(42, 171, 238, 0.15);
+}
+
+.form-select {
+    border-radius: 8px;
+}
+
+/* ===== Модальные окна ===== */
+.modal-content {
+    border-radius: 15px;
+    border: none;
+}
+
+.modal-header {
+    border-bottom: 1px solid #e9ecef;
+    padding: 20px;
+}
+
+/* ===== Алерты ===== */
+.alert {
+    border-radius: 10px;
+    border: none;
+}
+
+/* ===== Пагинация ===== */
+.pagination {
+    margin-bottom: 0;
+}
+
+.page-link {
+    border-radius: 8px;
+    margin: 0 2px;
+    border: 1px solid #e2e8f0;
+}
+
+.page-item.active .page-link {
+    background-color: var(--primary);
+    border-color: var(--primary);
+}
+
+/* ===== Футер ===== */
+footer {
+    background-color: white !important;
+    border-top: 1px solid #e9ecef;
+}
+
+/* ===== Адаптивность ===== */
+@media (max-width: 768px) {
+    #layoutSidenav_nav {
+        width: 0;
+        overflow: hidden;
+    }
+    
+    #layoutSidenav_content {
+        padding-left: 0;
+    }
+    
+    .sb-sidenav-toggled #layoutSidenav_nav {
+        width: 250px;
+    }
+    
+    .sb-sidenav-toggled #layoutSidenav_content {
+        padding-left: 250px;
+    }
+}
+
+/* ===== Анимации ===== */
+@keyframes fadeIn {
+    from { opacity: 0; transform: translateY(10px); }
+    to { opacity: 1; transform: translateY(0); }
+}
+
+.card {
+    animation: fadeIn 0.3s ease-out;
+}
+
+/* ===== Кастомный скроллбар ===== */
+::-webkit-scrollbar {
+    width: 8px;
+}
+
+::-webkit-scrollbar-track {
+    background: #f1f1f1;
+}
+
+::-webkit-scrollbar-thumb {
+    background: #888;
+    border-radius: 4px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+    background: #555;
+}
+
+/* ===== Спиннер загрузки ===== */
+.loading-spinner {
+    display: inline-block;
+    width: 20px;
+    height: 20px;
+    border: 3px solid #f3f3f3;
+    border-top: 3px solid var(--primary);
+    border-radius: 50%;
+    animation: spin 0.8s linear infinite;
+}
+
+@keyframes spin {
+    0% { transform: rotate(0deg); }
+    100% { transform: rotate(360deg); }
+}

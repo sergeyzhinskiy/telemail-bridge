@@ -1,0 +1,55 @@
+<!-- admin/templates/users.html -->
+<div class="container-fluid">
+    <div class="d-flex justify-content-between">
+        <h2>Управление пользователями</h2>
+        <button class="btn btn-primary" data-bs-toggle="modal" data-bs-target="#createUserModal">
+            + Добавить пользователя
+        </button>
+    </div>
+    
+    <!-- Поиск -->
+    <input type="text" id="search" class="form-control mt-3" placeholder="Поиск по email или Telegram ID">
+    
+    <!-- Таблица -->
+    <table class="table table-striped mt-3">
+        <thead>
+            <tr>
+                <th>ID</th>
+                <th>Telegram ID</th>
+                <th>Email</th>
+                <th>Тариф</th>
+                <th>Сообщений сегодня</th>
+                <th>Статус</th>
+                <th>Действия</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for user in users %}
+            <tr>
+                <td>{{ user.id }}</td>
+                <td>{{ user.telegram_user_id }}</td>
+                <td>{{ user.email }}</td>
+                <td>
+                    <select class="form-select" onchange="changeTier({{ user.id }}, this.value)">
+                        <option value="free" {% if user.subscription_tier == 'free' %}selected{% endif %}>Free</option>
+                        <option value="pro" {% if user.subscription_tier == 'pro' %}selected{% endif %}>Pro</option>
+                        <option value="business" {% if user.subscription_tier == 'business' %}selected{% endif %}>Business</option>
+                    </select>
+                </td>
+                <td>{{ user.messages_today }} / {{ user.daily_limit }}</td>
+                <td>
+                    {% if user.is_banned %}
+                    <span class="badge bg-danger">Забанен</span>
+                    {% else %}
+                    <span class="badge bg-success">Активен</span>
+                    {% endif %}
+                </td>
+                <td>
+                    <button class="btn btn-sm btn-warning" onclick="editUser({{ user.id }})">Изменить</button>
+                    <button class="btn btn-sm btn-danger" onclick="deleteUser({{ user.id }})">Удалить</button>
+                </td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+</div>

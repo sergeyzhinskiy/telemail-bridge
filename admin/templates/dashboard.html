@@ -1,0 +1,111 @@
+<!-- admin/templates/dashboard.html -->
+{% extends "base.html" %}
+
+{% block title %}Дашборд — TeleMail Admin{% endblock %}
+
+{% block content %}
+<div class="container-fluid px-4">
+    <h1 class="mt-4">Дашборд</h1>
+    
+    <!-- Карточки статистики -->
+    <div class="row mt-4">
+        <div class="col-xl-3 col-md-6">
+            <div class="card bg-primary text-white mb-4">
+                <div class="card-body">
+                    <div class="d-flex justify-content-between">
+                        <div>
+                            <h5 class="card-title">{{ stats.total_users }}</h5>
+                            <p class="card-text">Всего пользователей</p>
+                        </div>
+                        <div class="align-self-center">
+                            <i class="fas fa-users fa-2x"></i>
+                        </div>
+                    </div>
+                </div>
+                <div class="card-footer d-flex align-items-center justify-content-between">
+                    <a class="small text-white stretched-link" href="/admin/users">Подробнее</a>
+                </div>
+            </div>
+        </div>
+        
+        <div class="col-xl-3 col-md-6">
+            <div class="card bg-success text-white mb-4">
+                <div class="card-body">
+                    <div class="d-flex justify-content-between">
+                        <div>
+                            <h5 class="card-title">{{ stats.active_users_today }}</h5>
+                            <p class="card-text">Активных сегодня</p>
+                        </div>
+                        <div class="align-self-center">
+                            <i class="fas fa-user-check fa-2x"></i>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+        
+        <div class="col-xl-3 col-md-6">
+            <div class="card bg-warning text-white mb-4">
+                <div class="card-body">
+                    <div class="d-flex justify-content-between">
+                        <div>
+                            <h5 class="card-title">{{ stats.messages_today }}</h5>
+                            <p class="card-text">Сообщений сегодня</p>
+                        </div>
+                        <div class="align-self-center">
+                            <i class="fas fa-envelope fa-2x"></i>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+        
+        <div class="col-xl-3 col-md-6">
+            <div class="card bg-info text-white mb-4">
+                <div class="card-body">
+                    <div class="d-flex justify-content-between">
+                        <div>
+                            <h5 class="card-title">{{ stats.revenue_month }} ₽</h5>
+                            <p class="card-text">Выручка за месяц</p>
+                        </div>
+                        <div class="align-self-center">
+                            <i class="fas fa-ruble-sign fa-2x"></i>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+    
+    <!-- Системная информация -->
+    <div class="row mt-2">
+        <div class="col-12">
+            <div class="card">
+                <div class="card-header">
+                    <i class="fas fa-server me-1"></i> Системная информация
+                </div>
+                <div class="card-body">
+                    <div class="row">
+                        <div class="col-md-3">
+                            <small class="text-muted">Активных сессий:</small>
+                            <strong>{{ stats.active_sessions }}</strong>
+                        </div>
+                        <div class="col-md-3">
+                            <small class="text-muted">Очередь email:</small>
+                            <strong>{{ stats.email_queue_size }}</strong>
+                        </div>
+                        <div class="col-md-3">
+                            <small class="text-muted">Доставляемость:</small>
+                            <strong>{{ "%.1f"|format(stats.delivery_rate) }}%</strong>
+                        </div>
+                        <div class="col-md-3">
+                            <small class="text-muted">Премиум-пользователей:</small>
+                            <strong>{{ stats.premium_users }}</strong>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}
