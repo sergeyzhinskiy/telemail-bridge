@@ -3,7 +3,7 @@
 
 **Email-шлюз для Telegram на случай блокировки.** (в процессе разработки)
 
-[![Python](https://img.shields.io/badge/Python-3.12-blue.svg)](https://python.org)
+[![Python](https://img.shields.io/badge/Python-3.11-blue.svg)](https://python.org)
 [![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg)](https://www.gnu.org/licenses/gpl-3.0)
 [![Docker](https://img.shields.io/badge/Docker-ready-brightgreen.svg)](docker-compose.yml)
 [![Telegram](https://img.shields.io/badge/Telegram-Bot-blue.svg)](https://t.me/telemail_bot)
