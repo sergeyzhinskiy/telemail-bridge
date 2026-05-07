@@ -1,4 +1,4 @@
-﻿<#
+<#
 .SYNOPSIS
     TeleMail Bridge – Fully Automatic Windows Installer (Python 3.11)
 .DESCRIPTION
@@ -21,7 +21,7 @@ $VENV_DIR = "$APP_ROOT\venv"
 $LOG_DIR  = "$APP_ROOT\logs"
 $DATA_DIR = "$APP_ROOT\data"
 $CONFIG_DIR = "$APP_ROOT\config"
-$GIT_REPO = "https://github.com/yourusername/telemail-bridge.git"
+$GIT_REPO = "https://github.com/sergeyzhinskiy/telemail-bridge.git"
 
 $PG_VERSION = "16"
 $PG_PORT    = 5432
@@ -191,6 +191,7 @@ function Install-PostgreSQL {
     $pgService = Get-Service "postgresql*" -ErrorAction SilentlyContinue
     
     if (-not $pgService) {
+        # === ПЕРВАЯ УСТАНОВКА ===
         Write-Info "Downloading PostgreSQL..."
         $pgInstaller = "$env:TEMP\postgresql-16.exe"
         Invoke-WebRequest -Uri "https://get.enterprisedb.com/postgresql/postgresql-16.0-1-windows-x64.exe" -OutFile $pgInstaller
@@ -204,27 +205,11 @@ function Install-PostgreSQL {
         ) -Wait -NoNewWindow
         Remove-Item $pgInstaller -Force
         Start-Sleep -Seconds 15
-    } else {
-        Write-Info "PostgreSQL service found, ensuring it's running..."
-        if ((Get-Service $pgService.Name).Status -ne "Running") {
-            Start-Service $pgService.Name
-            Start-Sleep -Seconds 10
-        }
-    }
-    
-    $env:Path += ";$pgBin"
-    [Environment]::SetEnvironmentVariable("Path", [Environment]::GetEnvironmentVariable("Path","Machine") + ";$pgBin", "Machine")
-    
-    # Wait for PostgreSQL
-    Wait-ForPostgreSQL -PgBin $pgBin
-    
-    # Set trust auth temporarily
-    Set-PgHbaTrust -PgDataDir $pgDataDir
-    & "$pgBin\pg_ctl.exe" -D "$pgDataDir" reload 2>$null
-    Start-Sleep -Seconds 3
-    
-    try {
-        $env:PGPASSWORD = ""
+        
+        # При первой установке пароль суперпользователя уже задан через --superpassword
+        # Нужно просто создать пользователя telemail
+        $env:PGPASSWORD = $script:PG_PASSWORD
+        
         Write-Info "Creating database user..."
         & "$pgBin\psql.exe" -U postgres -h localhost -p $PG_PORT -c "CREATE ROLE telemail WITH LOGIN PASSWORD '$script:PG_PASSWORD';" 2>$null
         if ($LASTEXITCODE -ne 0) {
@@ -232,12 +217,74 @@ function Install-PostgreSQL {
         }
         & "$pgBin\psql.exe" -U postgres -h localhost -p $PG_PORT -c "CREATE DATABASE telemail OWNER telemail;" 2>$null
         & "$pgBin\psql.exe" -U postgres -h localhost -p $PG_PORT -c "GRANT ALL PRIVILEGES ON DATABASE telemail TO telemail;" 2>$null
-        Write-Success "PostgreSQL configured"
-    } catch {
-        Write-ErrorMsg "Failed to configure PostgreSQL: $_"
-    } finally {
-        Restore-PgHba -PgDataDir $pgDataDir
-        & "$pgBin\pg_ctl.exe" -D "$pgDataDir" reload 2>$null
+        
+        Write-Success "PostgreSQL configured (fresh install)"
+        
+    } else {
+        # === POSTGRESQL УЖЕ УСТАНОВЛЕН ===
+        Write-Info "PostgreSQL already installed. Resetting password..."
+        
+        # Запускаем службу
+        if ((Get-Service $pgService.Name).Status -ne "Running") {
+            Start-Service $pgService.Name
+            Start-Sleep -Seconds 10
+        }
+        
+        # Останавливаем службу для сброса пароля
+        Stop-Service $pgService.Name -Force
+        Start-Sleep -Seconds 3
+        
+        # Временно включаем trust-режим
+        Set-PgHbaTrust -PgDataDir $pgDataDir
+        
+        # Запускаем службу заново
+        Start-Service $pgService.Name
+        Start-Sleep -Seconds 10
+        
+        # Теперь можно подключиться без пароля
+        $env:PGPASSWORD = ""
+        
+        try {
+            Write-Info "Resetting PostgreSQL passwords..."
+            
+            # Меняем пароль суперпользователя
+            & "$pgBin\psql.exe" -U postgres -h localhost -p $PG_PORT -c "ALTER USER postgres WITH PASSWORD '$script:PG_PASSWORD';"
+            
+            # Создаём или обновляем пользователя telemail
+            & "$pgBin\psql.exe" -U postgres -h localhost -p $PG_PORT -c "CREATE ROLE telemail WITH LOGIN PASSWORD '$script:PG_PASSWORD';" 2>$null
+            if ($LASTEXITCODE -ne 0) {
+                & "$pgBin\psql.exe" -U postgres -h localhost -p $PG_PORT -c "ALTER USER telemail WITH PASSWORD '$script:PG_PASSWORD';" 2>$null
+            }
+            
+            # Создаём базу данных
+            & "$pgBin\psql.exe" -U postgres -h localhost -p $PG_PORT -c "CREATE DATABASE telemail OWNER telemail;" 2>$null
+            & "$pgBin\psql.exe" -U postgres -h localhost -p $PG_PORT -c "GRANT ALL PRIVILEGES ON DATABASE telemail TO telemail;" 2>$null
+            
+            Write-Success "PostgreSQL passwords reset"
+            
+        } finally {
+            # Возвращаем scram-sha-256
+            Restore-PgHba -PgDataDir $pgDataDir
+            
+            # Перезапускаем для применения
+            Restart-Service $pgService.Name
+            Start-Sleep -Seconds 10
+            
+            Write-Info "PostgreSQL restarted with secure authentication"
+        }
+    }
+    
+    # Add to PATH
+    $env:Path += ";$pgBin"
+    [Environment]::SetEnvironmentVariable("Path", [Environment]::GetEnvironmentVariable("Path","Machine") + ";$pgBin", "Machine")
+    
+    # Проверяем подключение с новым паролем
+    $env:PGPASSWORD = $script:PG_PASSWORD
+    $testResult = & "$pgBin\psql.exe" -U telemail -d telemail -h localhost -p $PG_PORT -c "SELECT 1;" 2>&1
+    if ($LASTEXITCODE -eq 0) {
+        Write-Success "Database connection verified"
+    } else {
+        Write-Warning "Database connection test failed. You may need to configure pg_hba.conf manually."
     }
 }
 
