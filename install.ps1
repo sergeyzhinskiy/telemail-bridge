@@ -233,47 +233,63 @@ function Install-Redis {
     Write-Step "4/7 Installing Redis"
 
     $script:REDIS_PASSWORD = New-RandomPassword -Length 16
-
-    Write-Info "Installing Redis..."
-    $redisInstaller = "$env:TEMP\Redis-x64.msi"
-    Invoke-WebRequest -Uri "https://github.com/microsoftarchive/redis/releases/download/win-3.2.100/Redis-x64-3.2.100.msi" -OutFile $redisInstaller
-    Start-Process msiexec.exe -ArgumentList "/i `"$redisInstaller`" /quiet /norestart" -Wait -NoNewWindow
-    Remove-Item $redisInstaller -Force
-
-    # Определяем путь установки Redis
     $redisPath = "C:\Program Files\Redis"
-    if (-not (Test-Path "$redisPath\redis-server.exe")) {
-        $redisPath = "C:\Program Files (x86)\Redis"
-        if (-not (Test-Path "$redisPath\redis-server.exe")) {
-            Write-ErrorMsg "Redis installation not found. Check $redisPath"
+
+    Write-Info "Installing Microsoft Redis..."
+    $redisMsi = "$env:TEMP\Redis-x64.msi"
+    $redisUrl = "https://github.com/microsoftarchive/redis/releases/download/win-3.2.100/Redis-x64-3.2.100.msi"
+
+    try {
+        Invoke-WebRequest -Uri $redisUrl -OutFile $redisMsi -TimeoutSec 120 -ErrorAction Stop
+        if ((Get-Item $redisMsi).Length -gt 2MB) {
+            Start-Process msiexec.exe -ArgumentList "/i `"$redisMsi`" /quiet /norestart" -Wait -NoNewWindow
+            Remove-Item $redisMsi -Force
+            Start-Sleep -Seconds 5
+
+            # Проверяем, появилась ли служба
+            $svc = Get-Service "Redis" -ErrorAction SilentlyContinue
+            if (-not $svc) {
+                # Служба не создалась – создаём через New-Service
+                Write-Info "Creating Redis service using New-Service..."
+
+                # Найдём redis-server.exe
+                if (-not (Test-Path "$redisPath\redis-server.exe")) {
+                    $redisPath = "C:\Program Files (x86)\Redis"
+                    if (-not (Test-Path "$redisPath\redis-server.exe")) {
+                        Write-ErrorMsg "redis-server.exe not found. Redis installation seems broken."
+                    }
+                }
+
+                $confFile = "$redisPath\redis.windows.conf"
+                $binaryPath = "`"$redisPath\redis-server.exe`" --service-run `"$confFile`""
+
+                New-Service -Name "Redis" -BinaryPathName $binaryPath -DisplayName "Redis" -StartupType Automatic
+                Start-Sleep -Seconds 2
+            }
+
+            # Теперь служба точно должна существовать
+            $svc = Get-Service "Redis" -ErrorAction SilentlyContinue
+            if (-not $svc) {
+                Write-ErrorMsg "Redis service still not found after creation"
+            }
+
+            # Настраиваем конфигурацию
+            $redisConfig = "$redisPath\redis.windows.conf"
+            if (Test-Path $redisConfig) {
+                $cfg = Get-Content $redisConfig
+                $cfg = $cfg -replace "# requirepass foobared", "requirepass $script:REDIS_PASSWORD"
+                $cfg = $cfg -replace "# bind 127.0.0.1", "bind 127.0.0.1"
+                [System.IO.File]::WriteAllText($redisConfig, ($cfg -join "`r`n"), [System.Text.Encoding]::ASCII)
+            }
+
+            Start-Service Redis -ErrorAction Stop
+            Write-Success "Redis installed and started"
+        } else {
+            Write-ErrorMsg "Downloaded Redis MSI is too small"
         }
+    } catch {
+        Write-ErrorMsg "Redis installation failed: $_"
     }
-
-    # Создаём службу Redis, если она не появилась
-    $redisService = Get-Service "Redis" -ErrorAction SilentlyContinue
-    if (-not $redisService) {
-        Write-Info "Creating Redis service manually..."
-        $binaryPath = "`"$redisPath\redis-server.exe`" --service-run `"$redisPath\redis.windows.conf`""
-        sc.exe create Redis binPath= $binaryPath start= auto
-        if ($LASTEXITCODE -ne 0) {
-            Write-ErrorMsg "Failed to create Redis service"
-        }
-        Start-Sleep -Seconds 2
-        $redisService = Get-Service "Redis"
-    }
-
-    # Настраиваем конфигурацию
-    $redisConfig = "$redisPath\redis.windows.conf"
-    if (Test-Path $redisConfig) {
-        $cfg = Get-Content $redisConfig
-        $cfg = $cfg -replace "# requirepass foobared", "requirepass $script:REDIS_PASSWORD"
-        $cfg = $cfg -replace "# bind 127.0.0.1", "bind 127.0.0.1"
-        [System.IO.File]::WriteAllText($redisConfig, ($cfg -join "`r`n"), [System.Text.Encoding]::ASCII)
-    }
-
-    # Запускаем службу
-    Start-Service Redis -ErrorAction SilentlyContinue
-    Write-Success "Redis installed"
 }
 
 # ===== STEP 5: CLONE REPOSITORY =====
