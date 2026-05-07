@@ -202,144 +202,145 @@ function Install-PostgreSQL {
         }
     }
     
-    $pgService = Get-Service "postgresql*" -ErrorAction SilentlyContinue
+    if (-not $pgBaseDir) {
+        Write-ErrorMsg "PostgreSQL binaries not found. Searched: $($possibleBaseDirs -join ', ')"
+    }
     
-    if (-not $pgService -and -not $pgBaseDir) {
-        # === ПЕРВАЯ УСТАНОВКА ===
-        $pgBaseDir = "C:\Program Files\PostgreSQL\$PG_VERSION"
-        $pgDataDir = "$pgBaseDir\data"
-        
-        Write-Info "Installing PostgreSQL..."
-        $pgInstaller = "$env:TEMP\postgresql-16.exe"
-        Invoke-WebRequest -Uri "https://get.enterprisedb.com/postgresql/postgresql-16.0-1-windows-x64.exe" -OutFile $pgInstaller
-        Start-Process -FilePath $pgInstaller -ArgumentList @(
-            "--mode", "unattended",
-            "--superpassword", $script:PG_PASSWORD,
-            "--servicename", "postgresql-$PG_VERSION",
-            "--serverport", $PG_PORT,
-            "--datadir", "`"$pgDataDir`""
-        ) -Wait -NoNewWindow
-        Remove-Item $pgInstaller -Force
-        Start-Sleep -Seconds 15
-        
-        $env:PGPASSWORD = $script:PG_PASSWORD
-        & "$pgBaseDir\bin\psql.exe" -U postgres -c "CREATE ROLE telemail WITH LOGIN PASSWORD '$script:PG_PASSWORD';" 2>$null
-        & "$pgBaseDir\bin\psql.exe" -U postgres -c "CREATE DATABASE telemail OWNER telemail;" 2>$null
-        & "$pgBaseDir\bin\psql.exe" -U postgres -c "GRANT ALL PRIVILEGES ON DATABASE telemail TO telemail;" 2>$null
-        Write-Success "PostgreSQL configured"
-        
-    } else {
-        # === POSTGRESQL УЖЕ УСТАНОВЛЕН ===
-        
-        # Определяем data директорию
-        $pgDataDir = "$pgBaseDir\data"
-        if (-not (Test-Path "$pgDataDir\pg_hba.conf")) {
-            $altDataDirs = @(
-                "C:\TeleMailBridge\PostgreSQL\data",
-                "$env:ProgramFiles\PostgreSQL\$PG_VERSION\data",
-                "C:\PostgreSQL\$PG_VERSION\data"
-            )
-            foreach ($altDir in $altDataDirs) {
-                if (Test-Path "$altDir\pg_hba.conf") {
-                    $pgDataDir = $altDir
-                    break
-                }
-            }
-        }
-        
-        if (-not (Test-Path "$pgDataDir\pg_hba.conf")) {
-            Write-ErrorMsg "pg_hba.conf not found"
-        }
-        
-        Write-Info "PostgreSQL found (data: $pgDataDir)"
-        
-        # Запускаем службу
-        if ((Get-Service $pgService.Name).Status -ne "Running") {
-            Start-Service $pgService.Name
-            Start-Sleep -Seconds 10
-        }
-        
-        # Пробуем подключиться к postgres БЕЗ изменения trust
-        $env:PGPASSWORD = ""
-        $testConnect = & "$pgBaseDir\bin\psql.exe" -U postgres -h localhost -c "SELECT 1;" 2>&1
-        
-        if ($LASTEXITCODE -eq 0) {
-            # Уже можно подключиться без пароля (trust уже настроен)
-            Write-Info "Already in trust mode, configuring users..."
-        } else {
-            # Нужно включить trust
-            Write-Info "Enabling trust mode..."
-            
-            # Останавливаем службу
-            Stop-Service $pgService.Name -Force -ErrorAction SilentlyContinue
-            Start-Sleep -Seconds 5
-            
-            # Делаем бэкап pg_hba.conf
-            $hbaFile = Join-Path $pgDataDir "pg_hba.conf"
-            Copy-Item $hbaFile "$hbaFile.backup" -Force
-            
-            # Заменяем на trust ТОЛЬКО для IPv4 local
-            $content = Get-Content $hbaFile -Encoding UTF8
-            $content = $content -replace 'host\s+all\s+all\s+127\.0\.0\.1/32\s+scram-sha-256', 'host    all             all             127.0.0.1/32            trust'
-            $content = $content -replace 'host\s+all\s+all\s+127\.0\.0\.1/32\s+md5', 'host    all             all             127.0.0.1/32            trust'
-            $content = $content -replace 'host\s+all\s+all\s+::1/128\s+scram-sha-256', 'host    all             all             ::1/128                 trust'
-            $content = $content -replace 'host\s+all\s+all\s+::1/128\s+md5', 'host    all             all             ::1/128                 trust'
-            $content | Set-Content $hbaFile -Encoding UTF8
-            
-            # Проверяем права на файл
-            icacls $hbaFile /grant "NT SERVICE\$($pgService.Name):(R)" 2>$null
-            
-            # Пробуем запустить
-            try {
-                Start-Service $pgService.Name -ErrorAction Stop
-            } catch {
-                Write-Warning "Failed to start PostgreSQL. Restoring original pg_hba.conf..."
-                Copy-Item "$hbaFile.backup" $hbaFile -Force
-                Start-Service $pgService.Name -ErrorAction SilentlyContinue
-                Start-Sleep -Seconds 5
-            }
-            
-            Start-Sleep -Seconds 10
-        }
-        
-        # Теперь подключаемся (должен быть trust)
-        $env:PGPASSWORD = ""
-        
-        try {
-            Write-Info "Configuring database users..."
-            & "$pgBaseDir\bin\psql.exe" -U postgres -h localhost -c "ALTER USER postgres WITH PASSWORD '$script:PG_PASSWORD';"
-            & "$pgBaseDir\bin\psql.exe" -U postgres -h localhost -c "CREATE ROLE telemail WITH LOGIN PASSWORD '$script:PG_PASSWORD';" 2>$null
-            if ($LASTEXITCODE -ne 0) {
-                & "$pgBaseDir\bin\psql.exe" -U postgres -h localhost -c "ALTER USER telemail WITH PASSWORD '$script:PG_PASSWORD';" 2>$null
-            }
-            & "$pgBaseDir\bin\psql.exe" -U postgres -h localhost -c "CREATE DATABASE telemail OWNER telemail;" 2>$null
-            & "$pgBaseDir\bin\psql.exe" -U postgres -h localhost -c "GRANT ALL PRIVILEGES ON DATABASE telemail TO telemail;" 2>$null
-            Write-Success "Database users configured"
-        } finally {
-            # Восстанавливаем оригинальный pg_hba.conf
-            $hbaFile = Join-Path $pgDataDir "pg_hba.conf"
-            $backupFile = "$hbaFile.backup"
-            if (Test-Path $backupFile) {
-                Copy-Item $backupFile $hbaFile -Force
-                Remove-Item $backupFile -Force
-                Restart-Service $pgService.Name
-                Start-Sleep -Seconds 5
-                Write-Info "pg_hba.conf restored"
+    $pgBin = "$pgBaseDir\bin"
+    $pgDataDir = "$pgBaseDir\data"
+    
+    # Ищем data директорию в альтернативных местах
+    if (-not (Test-Path "$pgDataDir\pg_hba.conf")) {
+        $altDataDirs = @(
+            "C:\TeleMailBridge\PostgreSQL\data",
+            "$env:ProgramFiles\PostgreSQL\$PG_VERSION\data",
+            "C:\PostgreSQL\$PG_VERSION\data"
+        )
+        foreach ($altDir in $altDataDirs) {
+            if (Test-Path "$altDir\pg_hba.conf") {
+                $pgDataDir = $altDir
+                break
             }
         }
     }
     
-    # Add to PATH
-    $env:Path += ";$pgBaseDir\bin"
-    [Environment]::SetEnvironmentVariable("Path", [Environment]::GetEnvironmentVariable("Path","Machine") + ";$pgBaseDir\bin", "Machine")
+    Write-Info "Using PostgreSQL at: $pgBaseDir (data: $pgDataDir)"
     
-    # Проверка подключения
-    $env:PGPASSWORD = $script:PG_PASSWORD
-    $testResult = & "$pgBaseDir\bin\psql.exe" -U telemail -d telemail -h localhost -c "SELECT 1;" 2>&1
-    if ($LASTEXITCODE -eq 0) {
-        Write-Success "Database connection verified"
+    # Находим или запускаем PostgreSQL
+    $pgService = Get-Service "postgresql*" -ErrorAction SilentlyContinue
+    
+    if ($pgService) {
+        $serviceName = $pgService.Name
+        Write-Info "PostgreSQL service found: $serviceName"
+        
+        # Проверяем, не зависла ли служба
+        if ($pgService.Status -eq "StopPending") {
+            Write-Info "PostgreSQL service is stuck stopping. Killing process..."
+            $pgProcess = Get-Process -Name "postgres" -ErrorAction SilentlyContinue
+            if ($pgProcess) {
+                $pgProcess | Stop-Process -Force
+                Start-Sleep -Seconds 5
+            }
+        }
+        
+        # Пробуем запустить службу
+        if ($pgService.Status -ne "Running") {
+            try {
+                Start-Service $serviceName -ErrorAction Stop
+                Start-Sleep -Seconds 5
+            } catch {
+                Write-Warning "Failed to start service $serviceName. Trying pg_ctl..."
+                # Пробуем запустить вручную через pg_ctl
+                & "$pgBin\pg_ctl.exe" -D "$pgDataDir" -l "$pgDataDir\pg.log" start 2>$null
+                Start-Sleep -Seconds 5
+            }
+        }
     } else {
-        Write-Warning "Connection test failed, but continuing..."
+        # Службы нет — запускаем через pg_ctl
+        Write-Info "No PostgreSQL service found. Starting via pg_ctl..."
+        & "$pgBin\pg_ctl.exe" -D "$pgDataDir" -l "$pgDataDir\pg.log" start 2>$null
+        Start-Sleep -Seconds 5
+    }
+    
+    # Проверяем, запустился ли PostgreSQL
+    $pgRunning = $false
+    for ($i = 1; $i -le 15; $i++) {
+        $test = & "$pgBin\pg_ctl.exe" -D "$pgDataDir" status 2>&1
+        if ($LASTEXITCODE -eq 0) {
+            $pgRunning = $true
+            Write-Info "PostgreSQL is running (checked via pg_ctl)"
+            break
+        }
+        Start-Sleep -Seconds 2
+    }
+    
+    if (-not $pgRunning) {
+        Write-ErrorMsg "PostgreSQL failed to start. Check $pgDataDir\pg.log for details"
+    }
+    
+    # Пробуем подключиться — возможно, trust уже настроен
+    $env:PGPASSWORD = ""
+    $testConnect = & "$pgBin\psql.exe" -U postgres -h localhost -c "SELECT 1;" 2>&1
+    
+    if ($LASTEXITCODE -eq 0) {
+        # Уже trust — просто настраиваем пользователей
+        Write-Info "Connected without password (trust mode active)"
+    } else {
+        # Включаем trust
+        Write-Info "Enabling trust authentication..."
+        
+        # Делаем бэкап
+        $hbaFile = Join-Path $pgDataDir "pg_hba.conf"
+        Copy-Item $hbaFile "$hbaFile.backup" -Force
+        
+        # Заменяем на trust
+        $content = Get-Content $hbaFile -Encoding UTF8
+        $content = $content -replace 'scram-sha-256', 'trust'
+        $content = $content -replace 'md5', 'trust'
+        $content | Set-Content $hbaFile -Encoding UTF8
+        
+        # Перезагружаем конфигурацию (без перезапуска службы)
+        & "$pgBin\pg_ctl.exe" -D "$pgDataDir" reload 2>$null
+        Start-Sleep -Seconds 3
+    }
+    
+    # Настраиваем пользователей
+    try {
+        Write-Info "Configuring database users..."
+        
+        & "$pgBin\psql.exe" -U postgres -h localhost -c "ALTER USER postgres WITH PASSWORD '$script:PG_PASSWORD';" 2>$null
+        & "$pgBin\psql.exe" -U postgres -h localhost -c "CREATE ROLE telemail WITH LOGIN PASSWORD '$script:PG_PASSWORD';" 2>$null
+        if ($LASTEXITCODE -ne 0) {
+            & "$pgBin\psql.exe" -U postgres -h localhost -c "ALTER USER telemail WITH PASSWORD '$script:PG_PASSWORD';" 2>$null
+        }
+        & "$pgBin\psql.exe" -U postgres -h localhost -c "CREATE DATABASE telemail OWNER telemail;" 2>$null
+        & "$pgBin\psql.exe" -U postgres -h localhost -c "GRANT ALL PRIVILEGES ON DATABASE telemail TO telemail;" 2>$null
+        
+        Write-Success "Database users configured"
+    } finally {
+        # Восстанавливаем оригинальный pg_hba.conf
+        $hbaFile = Join-Path $pgDataDir "pg_hba.conf"
+        $backupFile = "$hbaFile.backup"
+        if (Test-Path $backupFile) {
+            Copy-Item $backupFile $hbaFile -Force
+            Remove-Item $backupFile -Force
+            & "$pgBin\pg_ctl.exe" -D "$pgDataDir" reload 2>$null
+            Write-Info "Authentication restored to original"
+        }
+    }
+    
+    # Add to PATH
+    $env:Path += ";$pgBin"
+    [Environment]::SetEnvironmentVariable("Path", [Environment]::GetEnvironmentVariable("Path","Machine") + ";$pgBin", "Machine")
+    
+    # Финальная проверка с новым паролем
+    $env:PGPASSWORD = $script:PG_PASSWORD
+    $testResult = & "$pgBin\psql.exe" -U telemail -d telemail -h localhost -c "SELECT 1;" 2>&1
+    if ($LASTEXITCODE -eq 0) {
+        Write-Success "Database connection verified with new password"
+    } else {
+        Write-Warning "Connection test failed. Error: $testResult"
+        Write-Warning "You may need to manually set password for user 'telemail'"
     }
 }
 
