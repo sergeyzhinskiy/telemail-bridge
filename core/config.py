@@ -2,12 +2,33 @@
 import os
 from pathlib import Path
 from typing import Optional
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from dotenv import load_dotenv
 
-# Загружаем .env файл
-env_path = Path(__file__).parent.parent / '.env'
-load_dotenv(env_path)
+# Загружаем .env файл - ищем в нескольких местах
+env_locations = [
+    Path(__file__).parent.parent / '.env',        # Из корня проекта
+    Path.cwd() / '.env',                          # Из текущей рабочей директории
+    Path(__file__).parent.parent / 'src' / '.env', # Возможный путь
+]
+
+env_loaded = False
+for env_path in env_locations:
+    if env_path.exists():
+        load_dotenv(env_path)
+        env_loaded = True
+        break
+
+if not env_loaded:
+    # Пробуем найти .env в родительских директориях
+    current = Path(__file__).parent
+    while current != current.parent:
+        env_file = current / '.env'
+        if env_file.exists():
+            load_dotenv(env_file)
+            env_loaded = True
+            break
+        current = current.parent
 
 
 @dataclass
@@ -15,17 +36,14 @@ class Settings:
     """Настройки приложения"""
     
     # ========== Бот ==========
-    BOT_TOKEN: str = os.getenv('BOT_TOKEN', '')
+    BOT_TOKEN: str = os.getenv('BOT_TOKEN', os.getenv('BOT_TOKEN', ''))
     
     # ========== Telegram API (для Telethon) ==========
     TELEGRAM_API_ID: int = int(os.getenv('TELEGRAM_API_ID', '0'))
     TELEGRAM_API_HASH: str = os.getenv('TELEGRAM_API_HASH', '')
     
     # ========== База данных ==========
-    DATABASE_URL: str = os.getenv(
-        'DATABASE_URL',
-        'postgresql+asyncpg://telemail:password@localhost/telemail'
-    )
+    DATABASE_URL: str = os.getenv('DATABASE_URL', 'postgresql+asyncpg://telemail:password@localhost/telemail')
     DATABASE_POOL_SIZE: int = int(os.getenv('DATABASE_POOL_SIZE', '20'))
     DATABASE_MAX_OVERFLOW: int = int(os.getenv('DATABASE_MAX_OVERFLOW', '40'))
     
@@ -37,7 +55,7 @@ class Settings:
     REDIS_DB_FSM: int = int(os.getenv('REDIS_DB_FSM', '0'))
     
     # ========== Email (catch-all для приёма ответов) ==========
-    CATCH_ALL_EMAIL: str = os.getenv('CATCH_ALL_EMAIL', 'incoming@telemail.app')
+    CATCH_ALL_EMAIL: str = os.getenv('CATCH_ALL_EMAIL', '')
     CATCH_ALL_PASSWORD: str = os.getenv('CATCH_ALL_PASSWORD', '')
     CATCH_ALL_IMAP_HOST: str = os.getenv('CATCH_ALL_IMAP_HOST', 'imap.gmail.com')
     CATCH_ALL_IMAP_PORT: int = int(os.getenv('CATCH_ALL_IMAP_PORT', '993'))
@@ -45,10 +63,7 @@ class Settings:
     SMTP_FROM_ADDRESS: str = os.getenv('SMTP_FROM_ADDRESS', 'bot@telemail.app')
     
     # ========== Шифрование ==========
-    ENCRYPTION_KEY: str = os.getenv(
-        'ENCRYPTION_KEY',
-        'default-key-change-in-production-32bytes!'
-    )
+    ENCRYPTION_KEY: str = os.getenv('ENCRYPTION_KEY', 'default-key-change-in-production-32bytes!')
     
     # ========== Платежи ==========
     YOOKASSA_SHOP_ID: Optional[str] = os.getenv('YOOKASSA_SHOP_ID', None)
@@ -62,17 +77,16 @@ class Settings:
     
     # ========== Лимиты ==========
     DEFAULT_DAILY_LIMIT_FREE: int = 50
-    DEFAULT_DAILY_LIMIT_PRO: int = 10000  # "безлимит"
+    DEFAULT_DAILY_LIMIT_PRO: int = 10000
     DEFAULT_DAILY_LIMIT_BUSINESS: int = 100000
-    
-    MAX_ATTACHMENT_SIZE: int = 50 * 1024 * 1024  # 50 МБ
+    MAX_ATTACHMENT_SIZE: int = 50 * 1024 * 1024
     
     # ========== Логирование ==========
     LOG_LEVEL: str = os.getenv('LOG_LEVEL', 'INFO')
     
     # ========== Серверные настройки ==========
-    BASE_URL: str = os.getenv('BASE_URL', 'https://telemail.app')
-    ADMIN_BASE_URL: str = os.getenv('ADMIN_BASE_URL', 'https://admin.telemail.app')
+    BASE_URL: str = os.getenv('BASE_URL', 'http://localhost:8080')
+    ADMIN_BASE_URL: str = os.getenv('ADMIN_BASE_URL', 'http://localhost:8000')
     
     # ========== Celery ==========
     CELERY_BROKER_URL: str = os.getenv('CELERY_BROKER_URL', 'redis://localhost:6379/0')
@@ -90,18 +104,20 @@ class Settings:
         missing = [k for k, v in required.items() if not v]
         
         if missing:
-            raise ValueError(
-                f"Отсутствуют обязательные переменные окружения: {', '.join(missing)}"
-            )
-        
-        if self.ENCRYPTION_KEY == 'default-key-change-in-production-32bytes!':
-            import warnings
-            warnings.warn(
-                "⚠️ Используется стандартный ключ шифрования! "
-                "Установите ENCRYPTION_KEY в .env для продакшена."
-            )
+            print(f"Warning: Missing environment variables: {', '.join(missing)}")
+            print(f"Current working directory: {Path.cwd()}")
+            print(f"Looking for .env in: {[str(p) for p in env_locations]}")
+            # Don't raise error for admin panel - it doesn't need BOT_TOKEN
+            # Only bot.main needs these
+            import sys
+            if 'bot.main' in sys.argv[0] if sys.argv else False:
+                raise ValueError(f"Missing required environment variables: {', '.join(missing)}")
 
 
 # Создаём глобальный экземпляр настроек
 settings = Settings()
-settings.validate()
+
+# Validate only if not imported by admin panel
+import sys
+if 'uvicorn' not in sys.argv[0] if sys.argv else True:
+    settings.validate()
