@@ -186,12 +186,29 @@ function Install-PostgreSQL {
     Write-Step "3/7 Installing PostgreSQL 16"
     
     $script:PG_PASSWORD = New-RandomPassword -Length 20
-    $pgBin = "C:\Program Files\PostgreSQL\$PG_VERSION\bin"
-    $pgDataDir = "C:\Program Files\PostgreSQL\$PG_VERSION\data"
+    
+    # Определяем пути установки PostgreSQL
+    $possibleBaseDirs = @(
+        "C:\Program Files\PostgreSQL\$PG_VERSION",
+        "C:\TeleMailBridge\PostgreSQL",
+        "C:\PostgreSQL\$PG_VERSION"
+    )
+    
+    $pgBaseDir = $null
+    foreach ($dir in $possibleBaseDirs) {
+        if (Test-Path "$dir\bin\psql.exe") {
+            $pgBaseDir = $dir
+            break
+        }
+    }
+    
     $pgService = Get-Service "postgresql*" -ErrorAction SilentlyContinue
     
-    if (-not $pgService) {
-        # === ПЕРВАЯ УСТАНОВКА ===
+    if (-not $pgService -and -not $pgBaseDir) {
+        # === ПЕРВАЯ УСТАНОВКА (ни службы, ни файлов) ===
+        $pgBaseDir = "C:\Program Files\PostgreSQL\$PG_VERSION"
+        $pgDataDir = "$pgBaseDir\data"
+        
         Write-Info "Downloading PostgreSQL..."
         $pgInstaller = "$env:TEMP\postgresql-16.exe"
         Invoke-WebRequest -Uri "https://get.enterprisedb.com/postgresql/postgresql-16.0-1-windows-x64.exe" -OutFile $pgInstaller
@@ -206,23 +223,61 @@ function Install-PostgreSQL {
         Remove-Item $pgInstaller -Force
         Start-Sleep -Seconds 15
         
-        # При первой установке пароль суперпользователя уже задан через --superpassword
-        # Нужно просто создать пользователя telemail
         $env:PGPASSWORD = $script:PG_PASSWORD
         
         Write-Info "Creating database user..."
-        & "$pgBin\psql.exe" -U postgres -h localhost -p $PG_PORT -c "CREATE ROLE telemail WITH LOGIN PASSWORD '$script:PG_PASSWORD';" 2>$null
+        & "$pgBaseDir\bin\psql.exe" -U postgres -h localhost -p $PG_PORT -c "CREATE ROLE telemail WITH LOGIN PASSWORD '$script:PG_PASSWORD';" 2>$null
         if ($LASTEXITCODE -ne 0) {
-            & "$pgBin\psql.exe" -U postgres -h localhost -p $PG_PORT -c "ALTER USER telemail WITH PASSWORD '$script:PG_PASSWORD';" 2>$null
+            & "$pgBaseDir\bin\psql.exe" -U postgres -h localhost -p $PG_PORT -c "ALTER USER telemail WITH PASSWORD '$script:PG_PASSWORD';" 2>$null
         }
-        & "$pgBin\psql.exe" -U postgres -h localhost -p $PG_PORT -c "CREATE DATABASE telemail OWNER telemail;" 2>$null
-        & "$pgBin\psql.exe" -U postgres -h localhost -p $PG_PORT -c "GRANT ALL PRIVILEGES ON DATABASE telemail TO telemail;" 2>$null
+        & "$pgBaseDir\bin\psql.exe" -U postgres -h localhost -p $PG_PORT -c "CREATE DATABASE telemail OWNER telemail;" 2>$null
+        & "$pgBaseDir\bin\psql.exe" -U postgres -h localhost -p $PG_PORT -c "GRANT ALL PRIVILEGES ON DATABASE telemail TO telemail;" 2>$null
         
         Write-Success "PostgreSQL configured (fresh install)"
         
     } else {
-        # === POSTGRESQL УЖЕ УСТАНОВЛЕН ===
-        Write-Info "PostgreSQL already installed. Resetting password..."
+        # === POSTGRESQL УЖЕ УСТАНОВЛЕН (есть служба или файлы) ===
+        
+        if (-not $pgBaseDir) {
+            # Служба есть, но путь не найден — ищем через реестр
+            $serviceName = $pgService.Name
+            $regPath = "HKLM:\SYSTEM\CurrentControlSet\Services\$serviceName"
+            if (Test-Path $regPath) {
+                $imagePath = (Get-ItemProperty $regPath).ImagePath
+                if ($imagePath -match '"([^"]+)\\bin\\') {
+                    $pgBaseDir = $matches[1]
+                }
+            }
+        }
+        
+        if (-not $pgBaseDir) {
+            Write-ErrorMsg "Cannot find PostgreSQL installation directory. Searched: $($possibleBaseDirs -join ', ')"
+        }
+        
+        $pgBin = "$pgBaseDir\bin"
+        $pgDataDir = "$pgBaseDir\data"
+        
+        # Проверяем data dir в альтернативных местах
+        if (-not (Test-Path "$pgDataDir\pg_hba.conf")) {
+            $altDataDirs = @(
+                "C:\TeleMailBridge\PostgreSQL\data",
+                "$env:ProgramFiles\PostgreSQL\$PG_VERSION\data",
+                "C:\PostgreSQL\$PG_VERSION\data"
+            )
+            foreach ($altDir in $altDataDirs) {
+                if (Test-Path "$altDir\pg_hba.conf") {
+                    $pgDataDir = $altDir
+                    Write-Info "Found PostgreSQL data directory at: $pgDataDir"
+                    break
+                }
+            }
+        }
+        
+        if (-not (Test-Path "$pgDataDir\pg_hba.conf")) {
+            Write-ErrorMsg "pg_hba.conf not found. Searched: $pgDataDir and alternative paths"
+        }
+        
+        Write-Info "PostgreSQL found at: $pgBaseDir (data: $pgDataDir)"
         
         # Запускаем службу
         if ((Get-Service $pgService.Name).Status -ne "Running") {
@@ -275,19 +330,18 @@ function Install-PostgreSQL {
     }
     
     # Add to PATH
-    $env:Path += ";$pgBin"
-    [Environment]::SetEnvironmentVariable("Path", [Environment]::GetEnvironmentVariable("Path","Machine") + ";$pgBin", "Machine")
+    $env:Path += ";$pgBaseDir\bin"
+    [Environment]::SetEnvironmentVariable("Path", [Environment]::GetEnvironmentVariable("Path","Machine") + ";$pgBaseDir\bin", "Machine")
     
     # Проверяем подключение с новым паролем
     $env:PGPASSWORD = $script:PG_PASSWORD
-    $testResult = & "$pgBin\psql.exe" -U telemail -d telemail -h localhost -p $PG_PORT -c "SELECT 1;" 2>&1
+    $testResult = & "$pgBaseDir\bin\psql.exe" -U telemail -d telemail -h localhost -p $PG_PORT -c "SELECT 1;" 2>&1
     if ($LASTEXITCODE -eq 0) {
         Write-Success "Database connection verified"
     } else {
         Write-Warning "Database connection test failed. You may need to configure pg_hba.conf manually."
     }
 }
-
 # ===== STEP 4: INSTALL REDIS =====
 function Install-Redis {
     Write-Step "4/7 Installing Redis"
