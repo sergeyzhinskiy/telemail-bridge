@@ -7,15 +7,26 @@ from jinja2 import Environment, FileSystemLoader
 from datetime import datetime, timedelta
 from typing import Optional
 import jwt
+import logging
 
 from core.config import settings
 from core.db import init_db, close_db, get_db
 
+logger = logging.getLogger("uvicorn.error")
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    await init_db()
+    try:
+        await init_db()
+        logger.info("Database initialized successfully")
+    except Exception as e:
+        logger.error(f"Failed to initialize database: {e}")
+        logger.warning("Admin panel will start, but database features may not work")
     yield
-    await close_db()
+    try:
+        await close_db()
+    except:
+        pass
 
 app = FastAPI(title="TeleMail Admin", version="1.0.0", lifespan=lifespan)
 
@@ -46,6 +57,9 @@ async def get_current_admin(request: Request):
         raise HTTPException(status_code=401, detail="Token expired")
     except jwt.InvalidTokenError:
         raise HTTPException(status_code=401, detail="Invalid token")
+    except Exception as e:
+        logger.error(f"Auth error: {e}")
+        raise HTTPException(status_code=500, detail="Database connection failed")
 
 def admin_required(admin = Depends(get_current_admin)):
     if admin["role"] not in ("ADMIN", "SUPERADMIN"):
@@ -60,42 +74,50 @@ async def login_page():
 @app.post("/admin/login")
 async def login_action(request: Request, email: str = Form(...), password: str = Form(...)):
     import bcrypt
-    async with get_db() as db:
-        result = await db.execute(
-            "SELECT id, email, role, admin_password_hash FROM users WHERE email = :email",
-            {"email": email}
-        )
-        row = result.fetchone()
-        if not row or row[3] is None or not bcrypt.checkpw(password.encode(), row[3].encode()):
-            return render_template("login.html", error="Invalid credentials")
+    try:
+        async with get_db() as db:
+            result = await db.execute(
+                "SELECT id, email, role, admin_password_hash FROM users WHERE email = :email",
+                {"email": email}
+            )
+            row = result.fetchone()
+            if not row or row[3] is None or not bcrypt.checkpw(password.encode(), row[3].encode()):
+                return render_template("login.html", error="Invalid credentials")
 
-        token = jwt.encode(
-            {"user_id": row[0], "role": row[2], "exp": datetime.utcnow() + timedelta(hours=12)},
-            settings.JWT_SECRET,
-            algorithm="HS256"
-        )
-        response = RedirectResponse("/admin", status_code=302)
-        response.set_cookie("admin_token", token, httponly=True, max_age=43200)
-        return response
+            token = jwt.encode(
+                {"user_id": row[0], "role": row[2], "exp": datetime.utcnow() + timedelta(hours=12)},
+                settings.JWT_SECRET,
+                algorithm="HS256"
+            )
+            response = RedirectResponse("/admin", status_code=302)
+            response.set_cookie("admin_token", token, httponly=True, max_age=43200)
+            return response
+    except Exception as e:
+        logger.error(f"Login error: {e}")
+        return render_template("login.html", error=f"Database error: {str(e)}")
 
 @app.get("/admin", response_class=HTMLResponse)
 async def dashboard(request: Request, admin = Depends(admin_required)):
-    async with get_db() as db:
-        total_users = (await db.execute("SELECT COUNT(*) FROM users WHERE is_deleted = false")).scalar()
-        active_today = (await db.execute(
-            "SELECT COUNT(*) FROM users WHERE last_active_at >= :today AND is_deleted = false",
-            {"today": datetime.utcnow().date()}
-        )).scalar()
-        premium = (await db.execute(
-            "SELECT COUNT(*) FROM users WHERE subscription_tier IN ('pro','business') AND is_deleted = false"
-        )).scalar()
+    try:
+        async with get_db() as db:
+            total_users = (await db.execute("SELECT COUNT(*) FROM users WHERE is_deleted = false")).scalar()
+            active_today = (await db.execute(
+                "SELECT COUNT(*) FROM users WHERE last_active_at >= :today AND is_deleted = false",
+                {"today": datetime.utcnow().date()}
+            )).scalar()
+            premium = (await db.execute(
+                "SELECT COUNT(*) FROM users WHERE subscription_tier IN ('pro','business') AND is_deleted = false"
+            )).scalar()
 
-    stats = {
-        "total_users": total_users or 0,
-        "active_users_today": active_today or 0,
-        "premium_users": premium or 0,
-    }
-    return render_template("dashboard.html", admin=admin, stats=stats)
+        stats = {
+            "total_users": total_users or 0,
+            "active_users_today": active_today or 0,
+            "premium_users": premium or 0,
+        }
+        return render_template("dashboard.html", admin=admin, stats=stats)
+    except Exception as e:
+        logger.error(f"Dashboard error: {e}")
+        raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
 
 @app.get("/admin/users", response_class=HTMLResponse)
 async def users_list(request: Request, admin = Depends(admin_required), page: int = 1, search: str = ""):
