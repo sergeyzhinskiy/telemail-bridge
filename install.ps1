@@ -185,12 +185,31 @@ function Install-PostgreSQL {
     ) -Wait -NoNewWindow
     Remove-Item $pgInstaller -Force
 
-    # Wait for service to start
-    Start-Sleep -Seconds 15
-    $pgService = Get-Service "postgresql*"
+    # Wait for service to appear and start
+    $pgService = $null
+    $maxWait = 30
+    for ($i = 1; $i -le $maxWait; $i++) {
+        $pgService = Get-Service "postgresql*" -ErrorAction SilentlyContinue
+        if ($pgService) {
+            Write-Info "PostgreSQL service found: $($pgService.Name)"
+            if ($pgService.Status -ne "Running") {
+                Start-Service $pgService.Name -ErrorAction SilentlyContinue
+            }
+            Start-Sleep -Seconds 5
+            break
+        }
+        Write-Info "Waiting for PostgreSQL service to appear... ($i/$maxWait)"
+        Start-Sleep -Seconds 2
+    }
+
+    if (-not $pgService) {
+        Write-ErrorMsg "PostgreSQL service did not appear after $maxWait seconds"
+    }
+
+    # Final check that service is running
+    $pgService = Get-Service $pgService.Name
     if ($pgService.Status -ne "Running") {
-        Start-Service $pgService.Name
-        Start-Sleep -Seconds 5
+        Write-ErrorMsg "PostgreSQL service is not running"
     }
 
     # Create telemail user and database
