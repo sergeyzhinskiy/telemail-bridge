@@ -86,9 +86,14 @@ class User(Base):
     utm_source = Column(String(255))
     notes = Column(Text)
 
-    # Связи
+    # Связи – ЯВНО УКАЗЫВАЕМ foreign_keys, чтобы избежать неоднозначности
     chat_mappings = relationship("ChatMapping", back_populates="user", cascade="all, delete-orphan")
-    payments = relationship("Payment", back_populates="user", cascade="all, delete-orphan")
+    payments = relationship(
+        "Payment",
+        back_populates="user",
+        foreign_keys="Payment.user_id",
+        cascade="all, delete-orphan"
+    )
     admin_actions = relationship(
         "AdminAction",
         back_populates="admin",
@@ -141,7 +146,7 @@ class Payment(Base):
     refunded_at = Column(DateTime)
     refunded_by_admin_id = Column(Integer, ForeignKey("users.id"), nullable=True)
 
-    user = relationship("User", back_populates="payments")
+    user = relationship("User", back_populates="payments", foreign_keys=[user_id])
 
 
 class AdminAction(Base):
@@ -159,12 +164,11 @@ class AdminAction(Base):
 
 
 class MessageLog(Base):
-    """Лог всех сообщений для статистики и отладки"""
     __tablename__ = "message_log"
 
     id = Column(Integer, primary_key=True, autoincrement=True)
     user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
-    direction = Column(String(10), nullable=False)  # "incoming" или "outgoing"
+    direction = Column(String(10), nullable=False)
     chat_mapping_id = Column(Integer, ForeignKey("chat_mappings.id"), nullable=True)
     message_type = Column(String(20), default="text")
     email_message_id = Column(String(500))
@@ -178,7 +182,6 @@ class MessageLog(Base):
 
 
 class RateLimit(Base):
-    """Отслеживание рейт-лимитов"""
     __tablename__ = "rate_limits"
 
     id = Column(Integer, primary_key=True, autoincrement=True)
@@ -193,7 +196,6 @@ class RateLimit(Base):
 
 
 class EmailTemplate(Base):
-    """Шаблоны писем"""
     __tablename__ = "email_templates"
 
     id = Column(Integer, primary_key=True, autoincrement=True)
