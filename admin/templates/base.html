@@ -5,34 +5,25 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>{% block title %}TeleMail Admin{% endblock %}</title>
-    
     <!-- Bootstrap 5 CSS -->
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
-    
     <!-- Font Awesome -->
     <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css" rel="stylesheet">
-    
     <!-- DataTables -->
     <link href="https://cdn.datatables.net/1.13.6/css/dataTables.bootstrap5.min.css" rel="stylesheet">
-    
     <!-- Chart.js -->
     <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
-    
     <!-- Кастомные стили -->
     <link href="/static/css/admin.css" rel="stylesheet">
-    
     {% block extra_head %}{% endblock %}
 </head>
 <body class="sb-nav-fixed">
-    
     <!-- Навигация -->
     <nav class="sb-topnav navbar navbar-expand navbar-dark bg-dark">
         <a class="navbar-brand ps-3" href="/admin">🌉 TeleMail Admin</a>
-        
         <button class="btn btn-link btn-sm order-1 order-lg-0 me-4 me-lg-0" id="sidebarToggle">
             <i class="fas fa-bars"></i>
         </button>
-        
         <form class="d-none d-md-inline-block form-inline ms-auto me-0 me-md-3 my-2 my-md-0">
             <div class="input-group">
                 <input class="form-control" type="text" placeholder="Поиск пользователя..." id="globalSearch">
@@ -41,7 +32,6 @@
                 </button>
             </div>
         </form>
-        
         <ul class="navbar-nav ms-auto ms-md-0 me-3 me-lg-4">
             <li class="nav-item dropdown">
                 <a class="nav-link dropdown-toggle" href="#" role="button" data-bs-toggle="dropdown">
@@ -58,58 +48,22 @@
     </nav>
     
     <div id="layoutSidenav">
-        <!-- Боковое меню -->
         <div id="layoutSidenav_nav">
             <nav class="sb-sidenav accordion sb-sidenav-dark" id="sidenavAccordion">
                 <div class="sb-sidenav-menu">
                     <div class="nav">
                         <div class="sb-sidenav-menu-heading">Главное</div>
-                        
                         <a class="nav-link {% if request.url.path == '/admin' %}active{% endif %}" href="/admin">
                             <div class="sb-nav-link-icon"><i class="fas fa-tachometer-alt"></i></div>
                             Дашборд
                         </a>
-                        
                         <div class="sb-sidenav-menu-heading">Управление</div>
-                        
                         <a class="nav-link {% if '/admin/users' in request.url.path %}active{% endif %}" href="/admin/users">
                             <div class="sb-nav-link-icon"><i class="fas fa-users"></i></div>
                             Пользователи
                         </a>
-                        
-                        <a class="nav-link {% if '/admin/payments' in request.url.path %}active{% endif %}" href="/admin/payments">
-                            <div class="sb-nav-link-icon"><i class="fas fa-credit-card"></i></div>
-                            Платежи
-                        </a>
-                        
-                        <a class="nav-link" href="/admin/messages">
-                            <div class="sb-nav-link-icon"><i class="fas fa-envelope"></i></div>
-                            Сообщения
-                        </a>
-                        
-                        <div class="sb-sidenav-menu-heading">Система</div>
-                        
-                        <a class="nav-link" href="/admin/logs">
-                            <div class="sb-nav-link-icon"><i class="fas fa-file-alt"></i></div>
-                            Логи
-                        </a>
-                        
-                        <a class="nav-link" href="/admin/settings">
-                            <div class="sb-nav-link-icon"><i class="fas fa-cog"></i></div>
-                            Настройки
-                        </a>
-                        
-                        {% if admin.role.value == 'superadmin' %}
-                        <div class="sb-sidenav-menu-heading">Администрирование</div>
-                        
-                        <a class="nav-link" href="/admin/admins">
-                            <div class="sb-nav-link-icon"><i class="fas fa-shield-alt"></i></div>
-                            Администраторы
-                        </a>
-                        {% endif %}
                     </div>
                 </div>
-                
                 <div class="sb-sidenav-footer">
                     <div class="small">Версия: 1.0.0</div>
                     {{ admin.email if admin else '' }}
@@ -117,65 +71,116 @@
             </nav>
         </div>
         
-        <!-- Основной контент -->
         <div id="layoutSidenav_content">
             <main>
                 {% block content %}{% endblock %}
             </main>
-            
             <footer class="py-4 bg-light mt-auto">
                 <div class="container-fluid px-4">
                     <div class="d-flex align-items-center justify-content-between small">
-                        <div class="text-muted">&copy; 2024 TeleMail Bridge. Все права защищены.</div>
-                        <div>
-                            <a href="#">Политика конфиденциальности</a>
-                            &middot;
-                            <a href="#">Условия использования</a>
-                        </div>
+                        <div class="text-muted">&copy; 2024 TeleMail Bridge</div>
                     </div>
                 </div>
             </footer>
         </div>
     </div>
-    
+
     <!-- Скрипты -->
     <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
     <script src="https://code.jquery.com/jquery-3.7.0.min.js"></script>
     <script src="https://cdn.datatables.net/1.13.6/js/jquery.dataTables.min.js"></script>
     <script src="https://cdn.datatables.net/1.13.6/js/dataTables.bootstrap5.min.js"></script>
-    
-    <!-- Кастомные скрипты -->
+
+    <!-- Глобальные JS‑функции для управления пользователями -->
     <script>
-        // Глобальный поиск пользователей
         function globalSearchUsers() {
             const query = document.getElementById('globalSearch').value;
             if (query) {
                 window.location.href = '/admin/users?search=' + encodeURIComponent(query);
             }
         }
-        
-        // Обработка Enter в поиске
         document.getElementById('globalSearch')?.addEventListener('keypress', function(e) {
-            if (e.key === 'Enter') {
-                globalSearchUsers();
-            }
+            if (e.key === 'Enter') { globalSearchUsers(); }
         });
-        
-        // Toggle sidebar
         document.getElementById('sidebarToggle')?.addEventListener('click', function() {
             document.body.classList.toggle('sb-sidenav-toggled');
         });
-        
-        // Автоматическое скрытие алертов
-        setTimeout(function() {
-            document.querySelectorAll('.alert-auto-dismiss').forEach(function(alert) {
-                alert.style.transition = 'opacity 0.5s';
-                alert.style.opacity = '0';
-                setTimeout(function() { alert.remove(); }, 500);
-            });
-        }, 5000);
+
+        // Управление пользователями
+        function editUser(userId) {
+            fetch(`/api/admin/users/${userId}`)
+                .then(r => r.json())
+                .then(user => {
+                    const newEmail = prompt('Новый email:', user.email || '');
+                    if (newEmail === null) return;
+                    const newTier = prompt('Тариф (free/pro/business):', user.subscription_tier || 'free');
+                    if (newTier === null) return;
+                    const formData = new FormData();
+                    if (newEmail !== user.email) formData.append('email', newEmail);
+                    formData.append('tier', newTier);
+                    fetch(`/api/admin/users/${userId}/edit`, { method: 'POST', body: formData })
+                        .then(r => r.json())
+                        .then(data => {
+                            alert('Изменения сохранены!');
+                            location.reload();
+                        });
+                });
+        }
+        function banUser(userId) {
+            const reason = prompt('Причина бана:');
+            if (reason === null) return;
+            const formData = new FormData();
+            formData.append('is_banned', 'true');
+            formData.append('ban_reason', reason);
+            fetch(`/api/admin/users/${userId}/edit`, { method: 'POST', body: formData })
+                .then(r => r.json())
+                .then(data => {
+                    alert('Пользователь забанен');
+                    location.reload();
+                });
+        }
+        function unbanUser(userId) {
+            const formData = new FormData();
+            formData.append('is_banned', 'false');
+            fetch(`/api/admin/users/${userId}/edit`, { method: 'POST', body: formData })
+                .then(r => r.json())
+                .then(data => {
+                    alert('Пользователь разбанен');
+                    location.reload();
+                });
+        }
+        function deleteUser(userId) {
+            if (!confirm('Удалить пользователя безвозвратно?')) return;
+            fetch(`/api/admin/users/${userId}/delete`, { method: 'POST' })
+                .then(r => r.json())
+                .then(data => {
+                    alert('Пользователь удалён');
+                    location.reload();
+                });
+        }
+        function createUser() {
+            const telegramId = prompt('Telegram ID:');
+            if (!telegramId) return;
+            const email = prompt('Email:');
+            if (!email) return;
+            const tier = prompt('Тариф (free/pro/business):', 'free') || 'free';
+            const formData = new FormData();
+            formData.append('telegram_user_id', telegramId);
+            formData.append('email', email);
+            formData.append('tier', tier);
+            fetch('/api/admin/users/create', { method: 'POST', body: formData })
+                .then(r => r.json())
+                .then(data => {
+                    if (data.error) {
+                        alert(data.error);
+                    } else {
+                        alert('Пользователь добавлен!');
+                        location.reload();
+                    }
+                });
+        }
     </script>
-    
+
     {% block extra_scripts %}{% endblock %}
 </body>
 </html>
