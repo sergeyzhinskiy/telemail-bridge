@@ -30,7 +30,10 @@ class RegistrationStates(StatesGroup):
 
 
 async def cmd_start(message: types.Message, state: FSMContext):
-    """Начало регистрации"""
+    """Начало регистрации или перезапуск."""
+    # Всегда сбрасываем предыдущее состояние, если пользователь хочет начать заново
+    await state.finish()
+
     async with get_db() as db:
         result = await db.execute(
             select(User).where(User.telegram_user_id == message.from_user.id)
@@ -48,6 +51,20 @@ async def cmd_start(message: types.Message, state: FSMContext):
         "📧 Введите ваш email адрес:"
     )
     await RegistrationStates.waiting_email.set()
+
+
+async def cmd_cancel(message: types.Message, state: FSMContext):
+    """Сброс текущего состояния и возврат в начало."""
+    current_state = await state.get_state()
+    if current_state is None:
+        await message.answer("🤷 Нет активных действий для отмены.")
+        return
+
+    await state.finish()
+    await message.answer(
+        "✅ Действие отменено.\n"
+        "Чтобы начать заново, отправьте /start."
+    )
 
 
 async def process_email(message: types.Message, state: FSMContext):
@@ -105,7 +122,12 @@ async def process_email_password(message: types.Message, state: FSMContext):
         )
         await smtp.connect()
         if data['smtp_port'] == 587:
-            await smtp.starttls()
+            try:
+                await smtp.starttls()
+            except Exception as tls_error:
+                # Если соединение уже защищено – игнорируем, иначе пробрасываем дальше
+                if "already using TLS" not in str(tls_error) and "TLS already in use" not in str(tls_error):
+                    raise
         await smtp.login(data['email'], password)
         await smtp.quit()
     except Exception as e:
@@ -115,9 +137,8 @@ async def process_email_password(message: types.Message, state: FSMContext):
             "• Правильность пароля\n"
             "• Для Gmail нужен пароль приложения\n"
             "• Для Mail.ru нужно разрешить IMAP в настройках\n\n"
-            "Попробуйте ещё раз:"
+            "Попробуйте ещё раз или отправьте /cancel для отмены."
         )
-        await RegistrationStates.waiting_email_password.set()
         return
 
     await message.answer("✅ Почта подключена успешно!")
@@ -254,6 +275,7 @@ async def show_main_menu(message: types.Message, user: User):
 def register_handlers(dp: Dispatcher):
     """Регистрация обработчиков"""
     dp.register_message_handler(cmd_start, commands=['start'])
+    dp.register_message_handler(cmd_cancel, commands=['cancel'], state='*')  # доступна в любом состоянии
     dp.register_message_handler(process_email, state=RegistrationStates.waiting_email)
     dp.register_message_handler(process_email_password, state=RegistrationStates.waiting_email_password)
     dp.register_message_handler(process_phone_number, state=RegistrationStates.waiting_phone_number)
