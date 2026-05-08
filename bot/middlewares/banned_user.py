@@ -3,7 +3,7 @@ import logging
 from aiogram import types
 from aiogram.dispatcher.middlewares import BaseMiddleware
 from aiogram.dispatcher.handler import CancelHandler
-from core.db import get_db
+from core.db import get_user_by_telegram_id
 
 logger = logging.getLogger(__name__)
 
@@ -25,10 +25,9 @@ class BannedUserMiddleware(BaseMiddleware):
         """Проверка перед обработкой сообщения"""
         if not await self._check_user_banned(message.from_user.id):
             return
-        
-        # Пользователь забанен — отправляем сообщение и отменяем обработку
-        user = await self._get_user(message.from_user.id)
-        
+
+        user = await get_user_by_telegram_id(message.from_user.id)
+
         try:
             await message.answer(
                 self.BANNED_MESSAGE.format(
@@ -38,16 +37,16 @@ class BannedUserMiddleware(BaseMiddleware):
             )
         except Exception as e:
             logger.error(f"Не удалось отправить сообщение забаненному пользователю: {e}")
-        
+
         raise CancelHandler()
 
     async def on_pre_process_callback_query(self, callback: types.CallbackQuery, data: dict):
         """Проверка перед обработкой callback"""
         if not await self._check_user_banned(callback.from_user.id):
             return
-        
-        user = await self._get_user(callback.from_user.id)
-        
+
+        user = await get_user_by_telegram_id(callback.from_user.id)
+
         try:
             await callback.answer(
                 f"⛔ Аккаунт заблокирован: {user.ban_reason or 'Нарушение правил'}",
@@ -55,7 +54,7 @@ class BannedUserMiddleware(BaseMiddleware):
             )
         except Exception:
             pass
-        
+
         raise CancelHandler()
 
     async def _check_user_banned(self, telegram_user_id: int) -> bool:
@@ -63,15 +62,9 @@ class BannedUserMiddleware(BaseMiddleware):
         Проверяет, забанен ли пользователь.
         Возвращает True если забанен.
         """
-        async with get_db() as db:
-            user = await db.get_user_by_telegram_id(telegram_user_id)
-            
-            if not user:
-                return False  # Пользователь не зарегистрирован — пропускаем
-            
-            return user.is_banned
-    
-    async def _get_user(self, telegram_user_id: int):
-        """Получает объект пользователя"""
-        async with get_db() as db:
-            return await db.get_user_by_telegram_id(telegram_user_id)
+        user = await get_user_by_telegram_id(telegram_user_id)
+
+        if not user:
+            return False  # Пользователь не зарегистрирован – пропускаем
+
+        return user.is_banned
