@@ -8,6 +8,7 @@ from datetime import datetime, timedelta
 from typing import Optional
 import jwt
 import logging
+from sqlalchemy import text
 
 from core.config import settings
 from core.db import init_db, close_db, get_db
@@ -46,7 +47,7 @@ async def get_current_admin(request: Request):
         payload = jwt.decode(token, settings.JWT_SECRET, algorithms=["HS256"])
         async with get_db() as db:
             result = await db.execute(
-                "SELECT id, email, role FROM users WHERE id = :uid",
+                text("SELECT id, email, role FROM users WHERE id = :uid"),
                 {"uid": payload["user_id"]}
             )
             row = result.fetchone()
@@ -66,9 +67,14 @@ def admin_required(admin = Depends(get_current_admin)):
         raise HTTPException(status_code=403, detail="Insufficient permissions")
     return admin
 
+def superadmin_required(admin = Depends(get_current_admin)):
+    if admin["role"] != "SUPERADMIN":
+        raise HTTPException(status_code=403, detail="Superadmin only")
+    return admin
+
 # ------------------ Страницы ------------------
 @app.get("/admin/login", response_class=HTMLResponse)
-async def login_page():
+async def login_page(request: Request):
     return render_template("login.html")
 
 @app.post("/admin/login")
@@ -77,7 +83,7 @@ async def login_action(request: Request, email: str = Form(...), password: str =
     try:
         async with get_db() as db:
             result = await db.execute(
-                "SELECT id, email, role, admin_password_hash FROM users WHERE email = :email",
+                text("SELECT id, email, role, admin_password_hash FROM users WHERE email = :email"),
                 {"email": email}
             )
             row = result.fetchone()
@@ -100,57 +106,110 @@ async def login_action(request: Request, email: str = Form(...), password: str =
 async def dashboard(request: Request, admin = Depends(admin_required)):
     try:
         async with get_db() as db:
-            total_users = (await db.execute("SELECT COUNT(*) FROM users WHERE is_deleted = false")).scalar()
+            total_users = (await db.execute(
+                text("SELECT COUNT(*) FROM users WHERE is_deleted = false"))).scalar()
             active_today = (await db.execute(
-                "SELECT COUNT(*) FROM users WHERE last_active_at >= :today AND is_deleted = false",
-                {"today": datetime.utcnow().date()}
-            )).scalar()
+                text("SELECT COUNT(*) FROM users WHERE last_active_at >= :today AND is_deleted = false"),
+                {"today": datetime.utcnow().date()})).scalar()
             premium = (await db.execute(
-                "SELECT COUNT(*) FROM users WHERE subscription_tier IN ('pro','business') AND is_deleted = false"
-            )).scalar()
+                text("SELECT COUNT(*) FROM users WHERE CAST(subscription_tier AS text) IN ('pro', 'business') AND is_deleted = false"))).scalar()
+            messages_today = (await db.execute(
+                text("SELECT COUNT(*) FROM message_log WHERE created_at::date = :today"),
+                {"today": datetime.utcnow().date()})).scalar()
+            delivery_rate = 100.0
+            email_queue_size = 0
 
         stats = {
             "total_users": total_users or 0,
             "active_users_today": active_today or 0,
             "premium_users": premium or 0,
+            "messages_today": messages_today or 0,
+            "delivery_rate": delivery_rate,
+            "email_queue_size": email_queue_size,
         }
-        return render_template("dashboard.html", admin=admin, stats=stats)
+        return render_template("dashboard.html", admin=admin, stats=stats, request=request)
     except Exception as e:
         logger.error(f"Dashboard error: {e}")
         raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
 
 @app.get("/admin/users", response_class=HTMLResponse)
-async def users_list(request: Request, admin = Depends(admin_required), page: int = 1, search: str = ""):
+async def users_list(request: Request, admin = Depends(admin_required),
+                     page: int = 1, search: str = ""):
     per_page = 50
     offset = (page - 1) * per_page
     async with get_db() as db:
         if search:
             count = (await db.execute(
-                "SELECT COUNT(*) FROM users WHERE email ILIKE :s OR phone_number ILIKE :s",
-                {"s": f"%{search}%"}
-            )).scalar()
+                text("SELECT COUNT(*) FROM users WHERE email ILIKE :s OR phone_number ILIKE :s"),
+                {"s": f"%{search}%"})).scalar()
             users = (await db.execute(
-                "SELECT * FROM users WHERE email ILIKE :s OR phone_number ILIKE :s ORDER BY created_at DESC LIMIT :limit OFFSET :offset",
-                {"s": f"%{search}%", "limit": per_page, "offset": offset}
-            )).fetchall()
+                text("SELECT * FROM users WHERE email ILIKE :s OR phone_number ILIKE :s ORDER BY created_at DESC LIMIT :limit OFFSET :offset"),
+                {"s": f"%{search}%", "limit": per_page, "offset": offset})).fetchall()
         else:
-            count = (await db.execute("SELECT COUNT(*) FROM users")).scalar()
+            count = (await db.execute(text("SELECT COUNT(*) FROM users"))).scalar()
             users = (await db.execute(
-                "SELECT * FROM users ORDER BY created_at DESC LIMIT :limit OFFSET :offset",
-                {"limit": per_page, "offset": offset}
-            )).fetchall()
+                text("SELECT * FROM users ORDER BY created_at DESC LIMIT :limit OFFSET :offset"),
+                {"limit": per_page, "offset": offset})).fetchall()
         total_pages = max(1, (count + per_page - 1) // per_page)
-        return render_template("users.html", admin=admin, users=users, page=page, total_pages=total_pages, search=search)
+        return render_template("users.html", admin=admin, users=users, page=page,
+                               total_pages=total_pages, search=search, request=request)
+
+# ------------------ API для пользователей ------------------
+@app.get("/api/admin/users/{user_id}")
+async def api_get_user(user_id: int, admin = Depends(admin_required)):
+    async with get_db() as db:
+        result = await db.execute(text("SELECT * FROM users WHERE id = :id"), {"id": user_id})
+        row = result.fetchone()
+        if not row:
+            raise HTTPException(status_code=404)
+        cols = result.keys()
+        return dict(zip(cols, row))
+
+@app.post("/api/admin/users/create")
+async def api_create_user(
+    telegram_user_id: int = Form(...),
+    email: str = Form(...),
+    tier: str = Form("free"),
+    admin = Depends(admin_required)
+):
+    async with get_db() as db:
+        # Проверка, существует ли уже пользователь с таким Telegram ID
+        check = await db.execute(
+            text("SELECT id FROM users WHERE telegram_user_id = :tid"), {"tid": telegram_user_id})
+        if check.fetchone():
+            return JSONResponse({"error": "User with this Telegram ID already exists"}, status_code=400)
+        await db.execute(
+            text("INSERT INTO users (telegram_user_id, email, subscription_tier) VALUES (:tid, :email, CAST(:tier AS subscriptiontier))"),
+            {"tid": telegram_user_id, "email": email, "tier": tier})
+        await db.commit()
+        return {"status": "ok"}
 
 @app.post("/api/admin/users/{user_id}/edit")
-async def edit_user(user_id: int, email: Optional[str] = Form(None), tier: Optional[str] = Form(None), is_banned: Optional[bool] = Form(None), ban_reason: Optional[str] = Form(None), admin = Depends(admin_required)):
+async def api_edit_user(
+    user_id: int,
+    email: Optional[str] = Form(None),
+    tier: Optional[str] = Form(None),
+    is_banned: Optional[bool] = Form(None),
+    ban_reason: Optional[str] = Form(None),
+    admin = Depends(admin_required)
+):
     async with get_db() as db:
         if email:
-            await db.execute("UPDATE users SET email = :email WHERE id = :id", {"email": email, "id": user_id})
+            await db.execute(text("UPDATE users SET email = :email WHERE id = :id"), {"email": email, "id": user_id})
         if tier:
-            await db.execute("UPDATE users SET subscription_tier = :tier WHERE id = :id", {"tier": tier, "id": user_id})
+            await db.execute(
+                text("UPDATE users SET subscription_tier = CAST(:tier AS subscriptiontier) WHERE id = :id"),
+                {"tier": tier, "id": user_id})
         if is_banned is not None:
-            await db.execute("UPDATE users SET is_banned = :ban, ban_reason = :reason WHERE id = :id",
-                             {"ban": is_banned, "reason": ban_reason, "id": user_id})
+            await db.execute(
+                text("UPDATE users SET is_banned = :ban, ban_reason = :reason WHERE id = :id"),
+                {"ban": is_banned, "reason": ban_reason, "id": user_id})
         await db.commit()
-    return JSONResponse({"status": "ok"})
+    return {"status": "ok"}
+
+@app.post("/api/admin/users/{user_id}/delete")
+async def api_delete_user(user_id: int, admin = Depends(superadmin_required)):
+    async with get_db() as db:
+        await db.execute(text("DELETE FROM users WHERE id = :id"), {"id": user_id})
+        await db.commit()
+    return {"status": "ok"}
