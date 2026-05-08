@@ -1,11 +1,16 @@
 # bot/handlers/registration.py
 import re
 import logging
+import base64
+from datetime import datetime
+
 from aiogram import types, Dispatcher
 from aiogram.dispatcher import FSMContext
 from aiogram.dispatcher.filters.state import State, StatesGroup
+from sqlalchemy import select
 
 from core.db import get_db
+from database.models import User
 from core.security import encrypt_data
 from core.telethon_manager import TelethonSessionManager
 
@@ -87,7 +92,6 @@ async def process_email_password(message: types.Message, state: FSMContext):
     """Принимаем пароль и проверяем подключение"""
     password = message.text
     data = await state.get_data()
-    data['email_password_encrypted'] = encrypt_data(password)
     await state.update_data(email_password_encrypted=encrypt_data(password))
 
     await message.answer("⏳ Проверяю подключение к почте...")
@@ -193,20 +197,17 @@ async def _finish_registration(message: types.Message, state: FSMContext, client
     """Завершение регистрации"""
     data = await state.get_data()
 
-    from core.security import encrypt_data
     session_string = client.session.save()
-    encrypted_session = encrypt_data(
-        base64.b64encode(session_string.encode() if isinstance(session_string, str) else session_string).decode()
-        if isinstance(session_string, str)
-        else base64.b64encode(session_string).decode()
-    )
+    if isinstance(session_string, str):
+        encrypted_session = encrypt_data(base64.b64encode(session_string.encode()).decode())
+    else:
+        encrypted_session = encrypt_data(base64.b64encode(session_string).decode())
 
-    from database.models import User
     async with get_db() as db:
         user = User(
             telegram_user_id=message.from_user.id,
             email=data['email'],
-            email_password_encrypted=data['email_password_encrypted'],
+            email_password_encrypted=data.get('email_password_encrypted', ''),
             smtp_host=data.get('smtp_host', 'smtp.gmail.com'),
             smtp_port=data.get('smtp_port', 587),
             imap_host=data.get('imap_host', 'imap.gmail.com'),
@@ -236,7 +237,7 @@ async def _finish_registration(message: types.Message, state: FSMContext, client
     await TelethonSessionManager.start_listener(user)
 
 
-async def show_main_menu(message: types.Message, user):
+async def show_main_menu(message: types.Message, user: User):
     """Показать главное меню"""
     await message.answer(
         f"👋 С возвращением!\n\n"
@@ -252,10 +253,6 @@ async def show_main_menu(message: types.Message, user):
 
 def register_handlers(dp: Dispatcher):
     """Регистрация обработчиков"""
-    import base64
-    from datetime import datetime
-    from database.models import User
-
     dp.register_message_handler(cmd_start, commands=['start'])
     dp.register_message_handler(process_email, state=RegistrationStates.waiting_email)
     dp.register_message_handler(process_email_password, state=RegistrationStates.waiting_email_password)
