@@ -210,12 +210,11 @@ As the administrator, you run the backend on your Windows PC or VPS. Users (incl
    cd C:\bots\telemail_bridge
    ```
 4. Allow script execution and run it:
-
    ```powershell
-  Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
-  .\install.ps1
-  ```
-5.Answer the questions asked by the script.
+   Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
+   .\install.ps1
+   ```
+5. Answer the questions asked by the script.
 
 6. After installation finishes, shortcuts TeleMail Admin and TeleMail Management (service management) will appear on your desktop.
 
