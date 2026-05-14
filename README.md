@@ -3,6 +3,9 @@
 
 **Email-шлюз для Telegram на случай блокировки.** (в процессе разработки\ **тестирования**)
 
+> **⚠️ СТАТУС: В ПРОЦЕССЕ РАЗРАБОТКИ / ТЕСТИРОВАНИЯ**  
+> Проект находится в активной разработке и тестировании. Возможны изменения функциональности и появление ошибок. С осторожностью используйте.
+> 
 [![Python](https://img.shields.io/badge/Python-3.11-blue.svg)](https://python.org)
 [![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg)](https://www.gnu.org/licenses/gpl-3.0)
 [![Docker](https://img.shields.io/badge/Docker-ready-brightgreen.svg)](docker-compose.yml)
@@ -182,6 +185,9 @@ API-key для программного доступа к админке
 ===================================================
 
 # 🌉 TeleMail Bridge
+
+> **⚠️ STATUS: UNDER DEVELOPMENT / TESTING**  
+> This project is currently in active development and testing. Features may change, and bugs may appear. Use with caution in production environments.
 
 **TeleMail Bridge** is a service that turns your email into a gateway to Telegram. When Telegram is blocked, you can keep talking to your contacts using nothing but your mailbox. The bot automatically forwards incoming private Telegram messages to your email, and your replies are sent back to Telegram.
 
