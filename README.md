@@ -1,7 +1,7 @@
 # telemail-bridge
 # 🌉 TeleMail Bridge
 
-**Email-шлюз для Telegram на случай блокировки.** (в процессе разработки\**тестирования**)
+**Email-шлюз для Telegram на случай блокировки.** (в процессе разработки\ **тестирования**)
 
 [![Python](https://img.shields.io/badge/Python-3.11-blue.svg)](https://python.org)
 [![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg)](https://www.gnu.org/licenses/gpl-3.0)
